@@ -1,0 +1,8 @@
+# Copy to .dev.vars for local development (never commit .dev.vars).
+SESSION_SECRET=replace-with-64-random-hex-chars
+# Keys anonymous questionnaire answers. A different random string from the one above.
+ANON_SECRET=replace-with-another-64-random-hex-chars
+# Enables a fake sign-in form and sample calendar on localhost only.
+DEV_LOGIN=1
+# Optional locally: your OAuth web client ID, to test real Google sign-in.
+# GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com

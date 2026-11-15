@@ -1,0 +1,73 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "rendezvous",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // Every non-API path that isn't a file falls through to index.html (client-side routes like /e/abc123).
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rendezvous",
+      // No database_id: `wrangler deploy` provisions the database on first deploy and writes the id back here.
+      "migrations_dir": "./migrations"
+    }
+  ],
+
+  // Secrets (set each with `wrangler secret put <NAME>`; any long random string):
+  //   SESSION_SECRET  signs sign-in sessions
+  //   ANON_SECRET     keys anonymous questionnaire answers. Never rotate this one casually:
+  //                   doing so permanently cuts people off from the answers they gave.
+
+  "vars": {
+    // Public OAuth client ID (Google Cloud console → Credentials → OAuth client ID, type "Web application").
+    "GOOGLE_CLIENT_ID": "",
+
+    // How this instance behaves. Everything is optional; these are the defaults (see src/config.js).
+    "SETTINGS": {
+      // Google Workspace domains allowed to sign in, e.g. ["yourcompany.com"]. [] = any Google account.
+      // With domains set, every event requires sign-in from one of them.
+      "allowedDomains": [],
+      // Hours before people are asked to sign in with Google again.
+      "sessionHours": 24,
+      // Events, responses and answers are deleted this many days after an event's last candidate day.
+      "retentionDays": 60,
+      // Let organizers accept name-only answers (no sign-in). Leave unset to allow it only when
+      // allowedDomains is empty; set true or false to decide explicitly.
+      // "allowGuestResponses": false,
+      "maxEventsPerUserPerDay": 20,
+      "maxResponsesPerEvent": 300,
+      "maxQuestions": 12,
+      // Anonymous answers reach the organizer only in batches of at least this many people.
+      "anonBatch": 3,
+      // The "Reword with AI" button on written answers. Needs the "ai" binding below.
+      "aiReword": true,
+      "aiModel": "@cf/meta/llama-3.2-3b-instruct"
+    }
+  },
+
+  // Per-minute budgets, enforced by Cloudflare's rate limiter. period is 10 or 60 (seconds).
+  "ratelimits": [
+    // Anything that changes data: per signed-in person, or per address before sign-in.
+    { "name": "WRITE_LIMIT", "namespace_id": "1001", "simple": { "limit": 90, "period": 60 } },
+    // "Reword with AI" presses, per person.
+    { "name": "AI_LIMIT", "namespace_id": "1002", "simple": { "limit": 4, "period": 60 } }
+  ],
+
+  // Workers AI, used only by the reword button. Remove this block to switch the feature off entirely.
+  "ai": { "binding": "AI" },
+
+  // Once a day: delete events that are past their retention date.
+  "triggers": { "crons": ["17 4 * * *"] },
+
+  "observability": {
+    "enabled": true,
+    // Keep errors and warnings, but not a line per request: who saved what, when, is nobody's business.
+    "logs": { "invocation_logs": false }
+  }
+}
