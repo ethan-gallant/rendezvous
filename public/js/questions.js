@@ -48,6 +48,7 @@ export const SUGGESTIONS = [
     group: 'Location (always skippable)',
     items: [
       { label: 'How far they’d travel', type: 'area', prompt: 'Roughly where will you be coming from, and how far would you travel?' },
+      { label: 'Getting there', type: 'single', prompt: 'How do you plan to get there?', options: ['Driving myself', 'Getting a ride or carpooling', 'Bus, train or other public transit', 'Taxi or rideshare', 'Walking or cycling', 'Not sure yet'] },
     ],
   },
 ];
