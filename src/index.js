@@ -63,7 +63,7 @@ async function handleApi(request, env, url) {
 
   // One per-minute budget for anything that writes, per person (or per address before sign-in).
   if (method !== 'GET') {
-    await rateLimit(env.WRITE_LIMIT, session ? `u:${session.sub}` : `ip:${request.headers.get('CF-Connecting-IP') || 'unknown'}`);
+    await rateLimit(env.WRITE_LIMIT, session ? `u:${session.sub}` : addressKey(request));
   }
 
   if (route === 'GET /session') {
@@ -291,7 +291,9 @@ async function handleApi(request, env, url) {
       // A participant asks for their own draft to be reworded. Nothing is stored; they choose whether to use it.
       if (!myKey) throw new HttpError(401, 'sign_in_required');
       if (!s.aiReword || !env.AI) throw new HttpError(404, 'not_found');
-      await rateLimit(env.AI_LIMIT, myKey);
+      // Name-only guests identify themselves with a token their browser makes up, so a new token would
+      // be a new budget. They are counted by address instead.
+      await rateLimit(env.AI_LIMIT, session ? myKey : addressKey(request));
       const body = await readJson(request);
       const text = typeof body.text === 'string' ? body.text.trim().slice(0, REWORD_MAX_CHARS) : '';
       if (text.length < REWORD_MIN_CHARS) throw new HttpError(400, 'too_short');
@@ -488,6 +490,8 @@ function questionsOrThrow(input, s) {
 // ---------- limits & retention ----------
 
 /** Workers rate-limiting binding. Absent binding (tests, or removed from config) means no limit. */
+const addressKey = (request) => `ip:${request.headers.get('CF-Connecting-IP') || 'unknown'}`;
+
 async function rateLimit(binding, key) {
   if (!binding) return;
   const { success } = await binding.limit({ key });

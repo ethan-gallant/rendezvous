@@ -14,7 +14,7 @@ const proxies = [];
 after(() => Promise.all(proxies.map((p) => p.dispose())));
 
 /** A fresh instance with its own empty database and the given SETTINGS. */
-async function boot(settings = {}) {
+async function boot(settings = {}, bindings = {}) {
   const proxy = await getPlatformProxy({ configPath: 'wrangler.jsonc', persist: false });
   proxies.push(proxy);
   const db = proxy.env.DB;
@@ -22,10 +22,12 @@ async function boot(settings = {}) {
     const statements = sql.replace(/--.*$/gm, '').split(';').map((x) => x.trim()).filter(Boolean);
     for (const st of statements) await db.prepare(st).run();
   }
-  // No rate-limit or AI bindings here: those are Cloudflare's to test. Everything else is real.
+  // No rate-limit or AI bindings unless a test passes stand-ins: those are Cloudflare's to test.
+  // Everything else is real.
   const env = {
     DB: db, SETTINGS: settings, DEV_LOGIN: '1', GOOGLE_CLIENT_ID: '',
     SESSION_SECRET: 'session-secret-for-tests-only-0123456789', ANON_SECRET: 'anon-secret-for-tests-only-9876543210',
+    ...bindings,
   };
 
   const call = async (who, method, path, body, headers = {}) => {
@@ -230,4 +232,29 @@ test('AI rewording is unavailable without the AI binding', async () => {
   const { id } = (await call(ana, 'POST', '/events', newEvent({ questions: QUESTIONS }))).body;
   assert.equal((await call(null, 'GET', '/session')).body.config.aiReword, false);
   assert.equal((await call(ana, 'POST', `/events/${id}/reword`, { text: 'This is a long enough draft to reword.' })).status, 404);
+});
+
+test('the AI reword limit counts name-only guests by address, not by their own token', async () => {
+  // Stand-ins for the two platform bindings: a limiter that allows 4 per key, and a model that answers.
+  const used = new Map();
+  const AI_LIMIT = { limit: async ({ key }) => { used.set(key, (used.get(key) || 0) + 1); return { success: used.get(key) <= 4 }; } };
+  const AI = { run: async () => ({ response: 'Start earlier in the evening.' }) };
+  const { call, signIn } = await boot({}, { AI, AI_LIMIT });
+  const ana = await signIn('ana@acme.test', 'Ana');
+  const { id } = (await call(ana, 'POST', '/events', newEvent({ allowGuests: true }))).body;
+  const draft = { text: 'ok so honestly start EARLIER, some of us cannot do 9pm' };
+  const asGuest = (n, ip) => call(null, 'POST', `/events/${id}/reword`, draft,
+    { 'X-Guest-Token': `guest-token-number-${n}-padded-to-length`, 'CF-Connecting-IP': ip });
+
+  // A fresh guest token on every request does not buy a fresh budget.
+  for (let n = 0; n < 4; n++) assert.equal((await asGuest(n, '203.0.113.7')).status, 200);
+  const fifth = await asGuest(4, '203.0.113.7');
+  assert.equal(fifth.status, 429);
+  assert.equal(fifth.body.error, 'slow_down');
+  assert.deepEqual([...used.keys()], ['ip:203.0.113.7']);
+
+  // Another address, and a signed-in person, each have their own budget.
+  assert.equal((await asGuest(5, '203.0.113.8')).status, 200);
+  assert.equal((await call(ana, 'POST', `/events/${id}/reword`, draft, { 'CF-Connecting-IP': '203.0.113.7' })).status, 200);
+  assert.ok([...used.keys()].some((k) => k.startsWith('u:')));
 });
