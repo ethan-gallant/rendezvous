@@ -18,7 +18,7 @@ export const DEFAULTS = {
   maxQuestions: 12,
   // Anonymous answers reach the organizer in batches of at least this many people.
   anonBatch: 3,
-  // The "reword with AI" button on written answers (needs the AI binding).
+  // The "Paraphrase to anonymize" button on written answers (needs the AI binding).
   aiReword: true,
   aiModel: '@cf/meta/llama-3.2-3b-instruct',
 };

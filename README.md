@@ -10,7 +10,7 @@ Cloudflare Worker + D1 + static assets. No build step, no frontend framework.
 src/index.js          API (sessions, events, responses)
 src/config.js         instance settings and their defaults
 src/survey.js         questionnaire validation, location coarsening and summaries (unit-tested)
-src/reword.js         the Workers AI rewording prompt
+src/reword.js         the Workers AI paraphrasing prompt
 migrations/           D1 schema
 public/               the app (plain ES modules)
 public/js/lib/        pure logic: time zones, ranking, calendar overlay (unit-tested)
@@ -73,10 +73,10 @@ Everything an operator would want to change lives in `wrangler.jsonc`:
 | `maxResponsesPerEvent` | `300` | |
 | `maxQuestions` | `12` | |
 | `anonBatch` | `3` | Anonymous answers reach the organizer in batches of at least this many people. |
-| `aiReword`, `aiModel` | `true`, a small Llama model | The "Reword with AI" button. Remove the `ai` binding to switch it off entirely. |
+| `aiReword`, `aiModel` | `true`, a small Llama model | The "Paraphrase to anonymize" button on written answers. Remove the `ai` binding to switch it off entirely. |
 
 Per-minute rate limits are the two `ratelimits` entries in the same file: `WRITE_LIMIT` (anything that
-changes data, per person) and `AI_LIMIT` (reword presses, per person).
+changes data, per person) and `AI_LIMIT` (paraphrase presses, per signed-in person, or per address for name-only guests).
 
 Security leans on the platform rather than reimplementing it: identity is Google's, TLS/HSTS/DDoS and
 rate limiting are Cloudflare's, and request-by-request logging is switched off
@@ -135,8 +135,9 @@ calling the API directly, and are covered by `test/api.test.js`.
   cannot go back once anyone has answered.
 - **Everything expires.** Each event stores the date it will be deleted, fixed at creation and shown to
   everyone. Past that date the API treats it as gone, and a daily cron removes the rows.
-- **AI rewording is opt-in per press.** A written answer is sent to Workers AI only when its author
-  presses the button; they see the suggestion and choose whether to use it. Nothing is stored.
+- **AI paraphrasing is opt-in per press.** It exists to disguise writing style, not to improve the
+  answer. A written answer is sent to Workers AI only when its author presses the button; they see the
+  paraphrase and choose whether to use it. Nothing is stored.
 
 This is best-effort anonymity, and it is worth being plain about its limits:
 

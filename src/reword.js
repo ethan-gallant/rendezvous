@@ -1,6 +1,6 @@
-// "Reword with AI": rewrites a written answer so it is shorter and harder to
-// recognise by writing style. Runs on Workers AI, only when the person presses
-// the button, and the result is only a suggestion they can take or leave.
+// "Paraphrase to anonymize": rewrites a written answer so it is harder to recognise
+// by writing style. The aim is disguise, not better feedback. Runs on Workers AI,
+// only when the person presses the button, and they can take or leave the result.
 // Neither the draft nor the rewrite is stored or logged here.
 
 const SYSTEM = `You rewrite workplace feedback so that it cannot be recognised by its writing style.

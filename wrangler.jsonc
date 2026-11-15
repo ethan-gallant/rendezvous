@@ -45,7 +45,7 @@
       "maxQuestions": 12,
       // Anonymous answers reach the organizer only in batches of at least this many people.
       "anonBatch": 3,
-      // The "Reword with AI" button on written answers. Needs the "ai" binding below.
+      // The "Paraphrase to anonymize" button on written answers. Needs the "ai" binding below.
       "aiReword": true,
       "aiModel": "@cf/meta/llama-3.2-3b-instruct"
     }
@@ -55,11 +55,11 @@
   "ratelimits": [
     // Anything that changes data: per signed-in person, or per address before sign-in.
     { "name": "WRITE_LIMIT", "namespace_id": "1001", "simple": { "limit": 90, "period": 60 } },
-    // "Reword with AI" presses, per person.
+    // "Paraphrase to anonymize" presses, per signed-in person (per address for name-only guests).
     { "name": "AI_LIMIT", "namespace_id": "1002", "simple": { "limit": 4, "period": 60 } }
   ],
 
-  // Workers AI, used only by the reword button. Remove this block to switch the feature off entirely.
+  // Workers AI, used only by the paraphrase button. Remove this block to switch the feature off entirely.
   "ai": { "binding": "AI" },
 
   // Once a day: delete events that are past their retention date.

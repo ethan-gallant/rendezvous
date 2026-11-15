@@ -215,19 +215,20 @@ export function buildQuestionnaire({ questions, answers, locked, onChange, rewor
       });
       const kids = [legend, area];
       if (reword && !locked) {
-        // Optional and only on request: the suggestion is shown first and they decide whether to use it.
+        // Optional and only on request. It is a disguise for writing style, not an improvement: the
+        // paraphrase is shown first and they decide whether to use it.
         const slot = h('div', { class: 'reword' });
-        const ask = h('button', { class: 'link', type: 'button' }, icon('spark', 14), 'Reword with AI');
+        const ask = h('button', { class: 'link', type: 'button' }, icon('spark', 14), 'Paraphrase to anonymize');
         const idle = () => slot.replaceChildren(ask, h('span', { class: 'q-hint' },
-          'Shortens it and flattens your writing style, so it’s harder to tell who wrote it. Sends this draft to Cloudflare’s AI; nothing is kept.'));
+          'AI rewrites it in plain, flat wording so it’s harder to tell who wrote it. It won’t make your point better, only less recognisably yours. Sends this draft to Cloudflare’s AI; nothing is kept.'));
         ask.addEventListener('click', async () => {
           const draft = area.value.trim();
           if (draft.length < 20) return toast('Write a sentence or two first.');
-          slot.replaceChildren(h('span', { class: 'q-hint' }, 'Rewording…'));
+          slot.replaceChildren(h('span', { class: 'q-hint' }, 'Paraphrasing…'));
           try {
             const { text } = await reword(draft);
             slot.replaceChildren(h('div', { class: 'reword-box' },
-              h('span', { class: 'q-hint' }, 'Suggested wording'),
+              h('span', { class: 'q-hint' }, 'Paraphrased version'),
               h('p', null, text),
               h('div', { class: 'foot-actions' },
                 h('button', {
@@ -242,9 +243,9 @@ export function buildQuestionnaire({ questions, answers, locked, onChange, rewor
                 h('button', { class: 'btn small', type: 'button', onClick: idle }, 'Keep mine'))));
           } catch (e) {
             idle();
-            toast(e?.code === 'slow_down' ? 'That’s a lot of rewording. Give it a minute.'
+            toast(e?.code === 'slow_down' ? 'That’s a lot of paraphrasing. Give it a minute.'
               : e?.code === 'too_short' ? 'Write a sentence or two first.'
-                : 'AI rewording isn’t available right now.');
+                : 'AI paraphrasing isn’t available right now.');
           }
         });
         idle();
