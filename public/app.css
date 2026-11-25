@@ -427,10 +427,11 @@ input::placeholder { color: var(--faint); }
   .ev-body > .main-col, .ev-body > .side { display: contents; }
   .grid-card { order: 1; }
   .panel.cal { order: 2; }
-  .panel.qcard { order: 3; }
-  .panel.best { order: 4; }
-  .panel.people { order: 5; }
-  .panel.survey { order: 6; }
+  .panel.polls { order: 3; }
+  .panel.qcard { order: 4; }
+  .panel.best { order: 5; }
+  .panel.people { order: 6; }
+  .panel.survey { order: 7; }
 }
 @media (max-width: 640px) {
   #app { padding-left: 14px; padding-right: 14px; }
@@ -598,3 +599,44 @@ textarea::placeholder { color: var(--faint); }
 .reword-box .foot-actions { gap: 8px; }
 .fine.center .icon { color: var(--muted); }
 .opts > .pill-note { margin-bottom: 4px; }
+
+/* ---------- lock, day polls ---------- */
+.btn.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+.poll-list { display: grid; gap: 12px; }
+.poll { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.poll.focus { border-color: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+.poll-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.poll-title { display: grid; gap: 4px; min-width: 0; }
+.poll-title h3 { font-size: 16px; letter-spacing: -0.01em; overflow-wrap: anywhere; }
+.poll-day { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 650; color: var(--good-ink); }
+.poll-actions { display: flex; gap: 2px; flex: none; }
+.poll-opts { display: grid; gap: 8px; }
+.poll-row { display: grid; gap: 3px; }
+.poll-opt {
+  position: relative; overflow: hidden; display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 10px 12px; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); font-size: 14.5px; font-weight: 550;
+}
+.poll-opt::before { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--share, 0%); background: var(--surface-2); transition: width 0.25s; }
+.poll-opt > * { position: relative; }
+.poll-opt:hover:not(:disabled) { border-color: var(--ink); }
+.poll-opt.on { border-color: var(--good); background: var(--good-soft); color: var(--good-ink); }
+.poll-opt.on::before { background: color-mix(in srgb, var(--good) 22%, transparent); }
+.poll-opt:disabled { cursor: default; color: var(--muted); }
+.poll-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.poll-count { font-variant-numeric: tabular-nums; font-weight: 700; }
+.poll-radio { flex: none; width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--line-strong); }
+.poll-opt.on .poll-radio { border-color: var(--good); background: radial-gradient(circle, var(--good) 0 42%, transparent 46%); }
+.poll-names { font-size: 12.5px; color: var(--muted); padding-left: 38px; overflow-wrap: anywhere; }
+.poll-gate { display: grid; gap: 8px; justify-items: start; padding: 12px 14px; border-radius: 12px; background: var(--surface-2); font-size: 13.5px; }
+.poll-gate p:first-child { display: flex; gap: 8px; align-items: flex-start; }
+.poll-gate p:first-child .icon { margin-top: 2px; flex: none; }
+
+/* Polls-only view: what someone sees when they come back just to answer a follow-up. */
+.my-answer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px; font-size: 14px; color: var(--muted); }
+.my-answer span { display: inline-flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.my-answer .icon { margin-top: 2px; flex: none; color: var(--good-ink); }
+.event.simple { max-width: 640px; margin-inline: auto; }
+.event.simple .ev-body { grid-template-columns: minmax(0, 1fr); }
+.event.simple :is(.ev-meta, .ev-actions, .pref-note, .notice:not(.lock-note), .grid-card, .qcard, .survey, .side) { display: none; }
+.event.simple .polls { padding: 0; border: 0; background: none; box-shadow: none; }
+.event.simple .polls .panel-head { display: none; }

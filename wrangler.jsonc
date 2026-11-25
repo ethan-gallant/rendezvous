@@ -43,6 +43,8 @@
       "maxEventsPerUserPerDay": 20,
       "maxResponsesPerEvent": 300,
       "maxQuestions": 12,
+      // Follow-up polls about a single day ("Co-work day?"), per event.
+      "maxDayPolls": 12,
       // Anonymous answers reach the organizer only in batches of at least this many people.
       "anonBatch": 3,
       // The "Paraphrase to anonymize" button on written answers. Needs the "ai" binding below.

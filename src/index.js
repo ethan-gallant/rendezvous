@@ -76,6 +76,7 @@ async function handleApi(request, env, url) {
         retentionDays: s.retentionDays,
         sessionHours: s.sessionHours,
         maxQuestions: s.maxQuestions,
+        maxDayPolls: s.maxDayPolls,
         anonBatch: s.anonBatch,
         aiReword: s.aiReword && !!env.AI,
         map: {
@@ -217,12 +218,14 @@ async function handleApi(request, env, url) {
         }
       }
 
+      const canSee = !event.hideResults || isOwner;
       return json({
         event,
         responses: visible.map((r) => publicResponse(r, myKey, isOwner, myAnswers)),
         respondentCount: results.length,
         survey,
-        me: { isOwner, canSeeResults: !event.hideResults || isOwner },
+        polls: await readPolls(env, event, results, myKey, canSee),
+        me: { isOwner, canSeeResults: canSee },
       });
     }
 
@@ -242,8 +245,10 @@ async function handleApi(request, env, url) {
       const name = session ? session.name : cleanText(body.name, 60);
       if (!name) throw new HttpError(400, 'name_required');
 
-      const existing = await env.DB.prepare('SELECT rid, answers FROM responses WHERE event_id = ? AND user_key = ?')
+      const existing = await env.DB.prepare('SELECT rid, slots, answers FROM responses WHERE event_id = ? AND user_key = ?')
         .bind(id, myKey).first();
+      // Locked: nobody joins and nobody's days change. Questionnaire answers can still be saved.
+      if (event.locked && existing?.slots !== slots) throw new HttpError(403, 'locked');
       // Anonymous events keep answers in a separate table that holds no identity (see migration 0004).
       const anon = event.anonAnswers;
       const stored = anon ? await readAnon(env, id, myKey) : parseJson(existing?.answers ?? '{}', {});
@@ -265,6 +270,11 @@ async function handleApi(request, env, url) {
              name = excluded.name, email = excluded.email, picture = excluded.picture,
              slots = excluded.slots, answers = excluded.answers, updated_at = excluded.updated_at`,
         ).bind(id, myKey, rid, name, session?.email ?? null, session?.picture ?? null, slots, anon ? '{}' : answers, now),
+        // A day-poll answer only stands while the person is free that day.
+        env.DB.prepare(
+          `DELETE FROM day_poll_votes WHERE event_id = ? AND user_key = ? AND poll_id IN
+             (SELECT id FROM day_polls WHERE event_id = ? AND day IN (SELECT value FROM json_each(?)))`,
+        ).bind(id, myKey, id, JSON.stringify(event.dates.filter((_, d) => !freeOnDay(event, slots, d)))),
         ...anonChanges,
       ]);
       if (anonChanges.length) await maybeRelease(env, event, s);
@@ -278,9 +288,11 @@ async function handleApi(request, env, url) {
 
     if (seg.length === 3 && seg[2] === 'response' && method === 'DELETE') {
       if (!myKey) throw new HttpError(401, 'sign_in_required');
+      if (event.locked) throw new HttpError(403, 'locked');
       const anonChanges = await anonWrites(env, id, myKey, {}, event.questions);
       await env.DB.batch([
         ...anonChanges,
+        env.DB.prepare('DELETE FROM day_poll_votes WHERE event_id = ? AND user_key = ?').bind(id, myKey),
         env.DB.prepare('DELETE FROM responses WHERE event_id = ? AND user_key = ?').bind(id, myKey),
       ]);
       if (anonChanges.length) await maybeRelease(env, event, s);
@@ -315,6 +327,64 @@ async function handleApi(request, env, url) {
       await env.DB.prepare('UPDATE events SET title = ?, note = ?, preferred = ? WHERE id = ?')
         .bind(title, note, JSON.stringify(preferred), id).run();
       return json({ title, note, preferred });
+    }
+
+    if (seg.length === 3 && seg[2] === 'lock' && method === 'PUT') {
+      if (!isOwner) throw new HttpError(403, 'forbidden');
+      const locked = (await readJson(request)).locked === true;
+      await env.DB.prepare('UPDATE events SET locked = ? WHERE id = ?').bind(locked ? 1 : 0, id).run();
+      return json({ locked });
+    }
+
+    if (seg.length === 3 && seg[2] === 'polls' && method === 'POST') {
+      if (!isOwner) throw new HttpError(403, 'forbidden');
+      const poll = validatePoll(await readJson(request), event);
+      const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM day_polls WHERE event_id = ?').bind(id).first();
+      if (n >= s.maxDayPolls) throw new HttpError(409, 'too_many_polls', { limit: s.maxDayPolls });
+      const pid = randomId(8);
+      await env.DB.prepare('INSERT INTO day_polls (id, event_id, day, prompt, options, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(pid, id, poll.day, poll.prompt, JSON.stringify(poll.options), Date.now()).run();
+      return json({ poll: { id: pid, ...poll } }, 201);
+    }
+
+    if (seg[2] === 'polls' && seg[3]) {
+      const pid = seg[3];
+      const poll = /^[a-z0-9]{6,20}$/.test(pid)
+        ? await env.DB.prepare('SELECT id, day, options FROM day_polls WHERE id = ? AND event_id = ?').bind(pid, id).first()
+        : null;
+      if (!poll) throw new HttpError(404, 'not_found');
+
+      if (seg.length === 4 && method === 'DELETE') {
+        if (!isOwner) throw new HttpError(403, 'forbidden');
+        await env.DB.batch([
+          env.DB.prepare('DELETE FROM day_poll_votes WHERE poll_id = ?').bind(pid),
+          env.DB.prepare('DELETE FROM day_polls WHERE id = ?').bind(pid),
+        ]);
+        return json({ ok: true });
+      }
+
+      if (seg.length === 5 && seg[4] === 'vote' && method === 'PUT') {
+        if (!myKey) throw new HttpError(401, 'sign_in_required');
+        // The poll is only for people who said they can make that day. Checked against what is
+        // saved, not what the page claims.
+        const mine = await env.DB.prepare('SELECT slots FROM responses WHERE event_id = ? AND user_key = ?').bind(id, myKey).first();
+        if (!mine || !freeOnDay(event, mine.slots, event.dates.indexOf(poll.day))) {
+          throw new HttpError(403, 'not_available', { day: poll.day });
+        }
+        const { choice } = await readJson(request);
+        if (choice === null) {
+          await env.DB.prepare('DELETE FROM day_poll_votes WHERE poll_id = ? AND user_key = ?').bind(pid, myKey).run();
+          return json({ myVote: null });
+        }
+        if (!Number.isInteger(choice) || choice < 0 || choice >= parseJson(poll.options, []).length) {
+          throw new HttpError(400, 'bad_choice');
+        }
+        await env.DB.prepare(
+          `INSERT INTO day_poll_votes (poll_id, event_id, user_key, choice) VALUES (?, ?, ?, ?)
+           ON CONFLICT (poll_id, user_key) DO UPDATE SET choice = excluded.choice`,
+        ).bind(pid, id, myKey, choice).run();
+        return json({ myVote: choice });
+      }
     }
 
     if (seg.length === 3 && seg[2] === 'questions' && method === 'PUT') {
@@ -374,6 +444,7 @@ function publicEvent(row) {
     questions: parseJson(row.questions ?? '[]', []),
     anonAnswers: row.anon_answers !== 0,
     preferred: parseJson(row.preferred ?? '[]', []),
+    locked: !!row.locked,
     owner: { name: row.owner_name, picture: row.owner_picture },
     createdAt: row.created_at,
     expiresAt: row.expires_at ?? null,
@@ -402,6 +473,55 @@ function slotCount(event) {
   return event.kind === 'times'
     ? event.dates.length * ((event.endMin - event.startMin) / event.slotMin)
     : event.dates.length;
+}
+
+// ---------- day polls ----------
+
+/** Did this person mark the event's d-th day (any time on it) as one they can make? */
+function freeOnDay(event, slots, d) {
+  if (d < 0 || typeof slots !== 'string') return false;
+  const per = event.kind === 'times' ? (event.endMin - event.startMin) / event.slotMin : 1;
+  return slots.slice(d * per, (d + 1) * per).includes('1');
+}
+
+function validatePoll(b, event) {
+  const bad = (field) => new HttpError(400, 'invalid', { field });
+  if (!event.dates.includes(b.day)) throw bad('day');
+  const prompt = cleanText(b.prompt, 160);
+  if (!prompt) throw bad('prompt');
+  const options = [...new Set((Array.isArray(b.options) ? b.options : []).map((o) => cleanText(o, 80)).filter(Boolean))];
+  if (options.length < 2 || options.length > 6) throw bad('options');
+  return { day: b.day, prompt, options };
+}
+
+/**
+ * Polls as this viewer may see them. Everyone gets the question and their own answer; names and
+ * totals follow the same rule as availability (hidden from participants when the organizer chose
+ * "only I can see responses"). A vote counts only while its owner is still free that day.
+ */
+async function readPolls(env, event, responses, myKey, canSee) {
+  const [polls, votes] = await env.DB.batch([
+    env.DB.prepare('SELECT id, day, prompt, options FROM day_polls WHERE event_id = ? ORDER BY created_at, id').bind(event.id),
+    env.DB.prepare('SELECT poll_id, user_key, choice FROM day_poll_votes WHERE event_id = ?').bind(event.id),
+  ]);
+  return polls.results.map((p) => {
+    const options = parseJson(p.options, []);
+    const d = event.dates.indexOf(p.day);
+    const free = responses.filter((r) => freeOnDay(event, r.slots, d));
+    const byKey = new Map(free.map((r) => [r.user_key, r]));
+    const counted = votes.results.filter((v) => v.poll_id === p.id && byKey.has(v.user_key) && v.choice < options.length);
+    const out = {
+      id: p.id, day: p.day, prompt: p.prompt, options,
+      myVote: counted.find((v) => v.user_key === myKey)?.choice ?? null,
+    };
+    if (canSee) {
+      const voted = new Set(counted.map((v) => v.user_key));
+      out.eligible = free.length;
+      out.voters = options.map((_, k) => free.filter((r) => counted.some((v) => v.user_key === r.user_key && v.choice === k)).map((r) => r.name));
+      out.waiting = free.filter((r) => !voted.has(r.user_key)).map((r) => r.name);
+    }
+    return out;
+  });
 }
 
 // ---------- validation ----------
@@ -501,6 +621,8 @@ async function rateLimit(binding, key) {
 function deleteEventStatements(env, where, ...args) {
   return [
     env.DB.prepare(`DELETE FROM anon_answers WHERE event_id IN (SELECT id FROM events WHERE ${where})`).bind(...args),
+    env.DB.prepare(`DELETE FROM day_poll_votes WHERE event_id IN (SELECT id FROM events WHERE ${where})`).bind(...args),
+    env.DB.prepare(`DELETE FROM day_polls WHERE event_id IN (SELECT id FROM events WHERE ${where})`).bind(...args),
     env.DB.prepare(`DELETE FROM responses WHERE event_id IN (SELECT id FROM events WHERE ${where})`).bind(...args),
     env.DB.prepare(`DELETE FROM events WHERE ${where}`).bind(...args),
   ];

@@ -72,6 +72,7 @@ Everything an operator would want to change lives in `wrangler.jsonc`:
 | `maxEventsPerUserPerDay` | `20` | |
 | `maxResponsesPerEvent` | `300` | |
 | `maxQuestions` | `12` | |
+| `maxDayPolls` | `12` | Follow-up polls about a single day, per event. |
 | `anonBatch` | `3` | Anonymous answers reach the organizer in batches of at least this many people. |
 | `aiReword`, `aiModel` | `true`, a small Llama model | The "Paraphrase to anonymize" button on written answers. Remove the `ai` binding to switch it off entirely. |
 
@@ -93,6 +94,30 @@ npm test    # includes end-to-end API tests of the access, limit, batching and r
 The organizer can star one or more candidate days and add a short note ("we're encouraged to aim for the
 12th"). Participants see both while they answer; starred days are marked in the grid, always listed in the
 ranking, and win ties. Editable later from the pencil button on the event page.
+
+## Day polls and locking
+
+Once a day is looking likely, the organizer can add a **day poll**: one either-or question about that
+day ("Co-work day?" / "No co-work day", "Drinks + dinner?" / "No drinks or dinner"), from the event page.
+It can be added at any time, including to events created before this feature existed.
+
+- **Who is asked.** Only people whose saved availability includes that day can answer. The Worker checks
+  this against the database on every answer; the page's own idea of who is free is not trusted.
+- **The link.** Every poll has its own link (`/e/<event>/p/<poll>`), and the event's ordinary link works
+  too. Someone who has already responded and opens either one gets just the polls, with a "Change my
+  response" button that brings back the calendar and everything else. The organizer always gets the full
+  page.
+- **Someone who didn't mark the day** is told so, and can add it on the spot (one press for whole-day
+  events; for timed events the grid opens at that day). The poll opens up once that is saved.
+- **Answers follow availability.** If a person later drops the day, or removes their response, their
+  answer to that day's polls is deleted with it.
+- **Answers are named**, unlike the questionnaire: the organizer is counting heads. Other participants see
+  them too, unless the event is set to "only I can see responses", in which case each person gets back
+  only their own answer.
+
+**Lock** (organizer, toggle in the event header) freezes availability: nobody new can respond, and
+nobody can change or remove their days, until it is unlocked. Day polls and the questionnaire can still
+be answered while locked, which is the point: fix the group first, then ask it things.
 
 ## Follow-up questionnaire
 

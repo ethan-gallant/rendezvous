@@ -9,19 +9,28 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { getPlatformProxy } from 'wrangler';
 import worker from '../src/index.js';
 
-const migrations = readdirSync('migrations').sort().map((f) => readFileSync(`migrations/${f}`, 'utf8'));
+const migrations = readdirSync('migrations').sort().map((f) => ({ name: f, sql: readFileSync(`migrations/${f}`, 'utf8') }));
 const proxies = [];
 after(() => Promise.all(proxies.map((p) => p.dispose())));
 
-/** A fresh instance with its own empty database and the given SETTINGS. */
-async function boot(settings = {}, bindings = {}) {
+/**
+ * A fresh instance with its own empty database and the given SETTINGS. `holdFrom` stops before the
+ * migration whose file name starts with it, so a test can create data on the older schema and then
+ * call `migrate()` to apply the rest, the way a real upgrade happens.
+ */
+async function boot(settings = {}, bindings = {}, { holdFrom } = {}) {
   const proxy = await getPlatformProxy({ configPath: 'wrangler.jsonc', persist: false });
   proxies.push(proxy);
   const db = proxy.env.DB;
-  for (const sql of migrations) {
-    const statements = sql.replace(/--.*$/gm, '').split(';').map((x) => x.trim()).filter(Boolean);
-    for (const st of statements) await db.prepare(st).run();
-  }
+  const apply = async (list) => {
+    for (const { sql } of list) {
+      const statements = sql.replace(/--.*$/gm, '').split(';').map((x) => x.trim()).filter(Boolean);
+      for (const st of statements) await db.prepare(st).run();
+    }
+  };
+  const held = holdFrom ? migrations.filter((m) => m.name >= holdFrom) : [];
+  await apply(migrations.filter((m) => !held.includes(m)));
+  const migrate = () => apply(held);
   // No rate-limit or AI bindings unless a test passes stand-ins: those are Cloudflare's to test.
   // Everything else is real.
   const env = {
@@ -48,7 +57,7 @@ async function boot(settings = {}, bindings = {}) {
     await worker.scheduled({ cron: '17 4 * * *' }, env, { waitUntil: (p) => tasks.push(p) });
     await Promise.all(tasks);
   };
-  return { db, call, signIn, runCron };
+  return { db, call, signIn, runCron, migrate };
 }
 
 const DAYS = ['2027-03-01', '2027-03-02', '2027-03-03'];
@@ -257,4 +266,132 @@ test('the AI reword limit counts name-only guests by address, not by their own t
   assert.equal((await asGuest(5, '203.0.113.8')).status, 200);
   assert.equal((await call(ana, 'POST', `/events/${id}/reword`, draft, { 'CF-Connecting-IP': '203.0.113.7' })).status, 200);
   assert.ok([...used.keys()].some((k) => k.startsWith('u:')));
+});
+
+test('a day poll is answered only by people free that day, and answers follow availability', async () => {
+  const { db, call, signIn } = await boot({ maxDayPolls: 2 });
+  const [ana, ben, cy, dee] = await Promise.all([
+    signIn('ana@acme.test', 'Ana'), signIn('ben@acme.test', 'Ben'), signIn('cy@acme.test', 'Cy'), signIn('dee@acme.test', 'Dee'),
+  ]);
+  const { id } = (await call(ana, 'POST', '/events', newEvent())).body;
+  await call(ana, 'PUT', `/events/${id}/response`, { slots: '110' });
+  await call(ben, 'PUT', `/events/${id}/response`, { slots: '010' });
+  await call(cy, 'PUT', `/events/${id}/response`, { slots: '100' });   // not free on the 2nd
+
+  const ask = { day: DAYS[1], prompt: 'Co-work day?', options: ['Co-work day', 'No co-work day'] };
+  assert.equal((await call(ben, 'POST', `/events/${id}/polls`, ask)).status, 403, 'only the organizer creates polls');
+  assert.equal((await call(ana, 'POST', `/events/${id}/polls`, { ...ask, day: '2027-04-01' })).status, 400, 'the day must be one of the event’s');
+  assert.equal((await call(ana, 'POST', `/events/${id}/polls`, { ...ask, options: ['Only one'] })).status, 400);
+  const made = await call(ana, 'POST', `/events/${id}/polls`, ask);
+  assert.equal(made.status, 201);
+  const pid = made.body.poll.id;
+  const vote = (who, choice) => call(who, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice });
+
+  assert.equal((await vote(ben, 0)).status, 200);
+  assert.equal((await vote(ana, 1)).status, 200);
+  assert.equal((await vote(ana, 7)).status, 400);
+  const notFree = await vote(cy, 0);
+  assert.equal(notFree.status, 403, 'free on another day is not enough');
+  assert.equal(notFree.body.error, 'not_available');
+  assert.equal((await vote(dee, 0)).status, 403, 'neither is not having answered at all');
+  assert.equal((await vote(null, 0)).status, 401);
+
+  let poll = (await call(ben, 'GET', `/events/${id}`)).body.polls[0];
+  assert.deepEqual([poll.prompt, poll.day, poll.myVote, poll.eligible], ['Co-work day?', DAYS[1], 0, 2]);
+  assert.deepEqual(poll.voters, [['Ben'], ['Ana']]);
+  assert.deepEqual(poll.waiting, []);
+  assert.equal((await call(cy, 'GET', `/events/${id}`)).body.polls[0].myVote, null);
+
+  // Cy updates their availability to include the day, and can then answer.
+  await call(cy, 'PUT', `/events/${id}/response`, { slots: '110' });
+  assert.deepEqual((await call(ana, 'GET', `/events/${id}`)).body.polls[0].waiting, ['Cy']);
+  assert.equal((await vote(cy, 0)).status, 200);
+
+  // Ben drops the day: the answer goes with it, in the database and not just in the totals.
+  await call(ben, 'PUT', `/events/${id}/response`, { slots: '001' });
+  poll = (await call(ana, 'GET', `/events/${id}`)).body.polls[0];
+  assert.deepEqual([poll.eligible, poll.voters], [2, [['Cy'], ['Ana']]]);
+  const votesOf = async (email) => (await db.prepare('SELECT COUNT(*) AS n FROM day_poll_votes WHERE user_key = ?').bind(`u:dev-${email}`).first()).n;
+  assert.equal(await votesOf('ben@acme.test'), 0);
+  // Changing something else keeps an answer; removing the whole response removes it.
+  await call(cy, 'PUT', `/events/${id}/response`, { slots: '111' });
+  assert.equal(await votesOf('cy@acme.test'), 1);
+  await call(cy, 'DELETE', `/events/${id}/response`);
+  assert.equal(await votesOf('cy@acme.test'), 0);
+  assert.equal((await vote(ana, null)).body.myVote, null, 'an answer can be withdrawn');
+
+  // Limit, and deleting.
+  assert.equal((await call(ana, 'POST', `/events/${id}/polls`, { ...ask, prompt: 'Drinks + dinner?' })).status, 201);
+  assert.equal((await call(ana, 'POST', `/events/${id}/polls`, { ...ask, prompt: 'A third' })).status, 409);
+  assert.equal((await call(ben, 'DELETE', `/events/${id}/polls/${pid}`)).status, 403);
+  await vote(ana, 0);
+  assert.equal((await call(ana, 'DELETE', `/events/${id}/polls/${pid}`)).status, 200);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM day_poll_votes WHERE poll_id = ?').bind(pid).first()).n, 0);
+  assert.equal((await call(ana, 'DELETE', `/events/${id}`)).status, 200);
+  assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM day_polls').first()).n, 0, 'deleting the event takes its polls with it');
+});
+
+test('poll answers are hidden from other participants when responses are', async () => {
+  const { call, signIn } = await boot();
+  const ana = await signIn('ana@acme.test', 'Ana');
+  const ben = await signIn('ben@acme.test', 'Ben');
+  const { id } = (await call(ana, 'POST', '/events', newEvent({ hideResults: true }))).body;
+  await call(ana, 'PUT', `/events/${id}/response`, { slots: '100' });
+  await call(ben, 'PUT', `/events/${id}/response`, { slots: '100' });
+  const pid = (await call(ana, 'POST', `/events/${id}/polls`, { day: DAYS[0], prompt: 'Dinner?', options: ['Yes', 'No'] })).body.poll.id;
+  await call(ana, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 0 });
+  await call(ben, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 1 });
+
+  const asBen = (await call(ben, 'GET', `/events/${id}`)).body.polls[0];
+  assert.deepEqual(Object.keys(asBen).sort(), ['day', 'id', 'myVote', 'options', 'prompt'], 'a participant gets the question and their own answer only');
+  assert.equal(asBen.myVote, 1);
+  assert.deepEqual((await call(ana, 'GET', `/events/${id}`)).body.polls[0].voters, [['Ana'], ['Ben']]);
+});
+
+test('locking freezes who responded and which days, but not poll or questionnaire answers', async () => {
+  const { call, signIn } = await boot();
+  const ana = await signIn('ana@acme.test', 'Ana');
+  const ben = await signIn('ben@acme.test', 'Ben');
+  const cy = await signIn('cy@acme.test', 'Cy');
+  const { id } = (await call(ana, 'POST', '/events', newEvent({ questions: QUESTIONS, anonAnswers: false }))).body;
+  await call(ben, 'PUT', `/events/${id}/response`, { slots: '110' });
+  const pid = (await call(ana, 'POST', `/events/${id}/polls`, { day: DAYS[0], prompt: 'Dinner?', options: ['Yes', 'No'] })).body.poll.id;
+
+  assert.equal((await call(ben, 'PUT', `/events/${id}/lock`, { locked: true })).status, 403, 'only the organizer locks');
+  assert.equal((await call(ana, 'PUT', `/events/${id}/lock`, { locked: true })).body.locked, true);
+  assert.equal((await call(cy, 'GET', `/events/${id}`)).body.event.locked, true);
+
+  const late = await call(cy, 'PUT', `/events/${id}/response`, { slots: '100' });
+  assert.deepEqual([late.status, late.body.error], [403, 'locked'], 'nobody new joins');
+  assert.equal((await call(ana, 'PUT', `/events/${id}/response`, { slots: '100' })).status, 403, 'not even the organizer');
+  assert.equal((await call(ben, 'PUT', `/events/${id}/response`, { slots: '111' })).status, 403, 'days cannot change');
+  assert.equal((await call(ben, 'DELETE', `/events/${id}/response`)).status, 403);
+
+  // Same days, new questionnaire answers: allowed. So is answering the poll.
+  assert.equal((await call(ben, 'PUT', `/events/${id}/response`, { slots: '110', answers: { qone1: 2 } })).status, 200);
+  assert.equal((await call(ben, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 0 })).status, 200);
+  assert.equal((await call(cy, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 0 })).status, 403);
+
+  assert.equal((await call(ana, 'PUT', `/events/${id}/lock`, { locked: false })).body.locked, false);
+  assert.equal((await call(cy, 'PUT', `/events/${id}/response`, { slots: '100' })).status, 200);
+});
+
+test('events created before day polls existed gain them with no changes', async () => {
+  const { db, call, signIn, migrate } = await boot({}, {}, { holdFrom: '0006' });
+  const ana = await signIn('ana@acme.test', 'Ana');
+  const { id } = (await call(ana, 'POST', '/events', newEvent())).body;
+  await db.prepare(
+    `INSERT INTO responses (event_id, user_key, rid, name, email, picture, slots, answers, updated_at)
+     VALUES (?, 'u:dev-ana@acme.test', 'oldrid01', 'Ana', 'ana@acme.test', NULL, '011', '{}', 1)`,
+  ).bind(id).run();
+
+  await migrate();
+
+  const before = (await call(ana, 'GET', `/events/${id}`)).body;
+  assert.equal(before.event.locked, false);
+  assert.deepEqual(before.polls, []);
+  assert.equal(before.responses[0].slots, '011');
+  const pid = (await call(ana, 'POST', `/events/${id}/polls`, { day: DAYS[2], prompt: 'Co-work day?', options: ['Yes', 'No'] })).body.poll.id;
+  assert.equal((await call(ana, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 0 })).status, 200);
+  assert.equal((await call(ana, 'PUT', `/events/${id}/lock`, { locked: true })).body.locked, true);
 });

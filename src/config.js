@@ -16,6 +16,8 @@ export const DEFAULTS = {
   maxEventsPerUserPerDay: 20,
   maxResponsesPerEvent: 300,
   maxQuestions: 12,
+  // Follow-up polls about a single day ("Co-work day?"), per event.
+  maxDayPolls: 12,
   // Anonymous answers reach the organizer in batches of at least this many people.
   anonBatch: 3,
   // The "Paraphrase to anonymize" button on written answers (needs the AI binding).
@@ -49,6 +51,7 @@ export function settings(env) {
     maxEventsPerUserPerDay: int(raw.maxEventsPerUserPerDay, DEFAULTS.maxEventsPerUserPerDay, 1, 10_000),
     maxResponsesPerEvent: int(raw.maxResponsesPerEvent, DEFAULTS.maxResponsesPerEvent, 2, 5000),
     maxQuestions: int(raw.maxQuestions, DEFAULTS.maxQuestions, 0, 50),
+    maxDayPolls: int(raw.maxDayPolls, DEFAULTS.maxDayPolls, 0, 100),
     // A "batch" of one would be no anonymity at all.
     anonBatch: int(raw.anonBatch, DEFAULTS.anonBatch, 2, 100),
     aiReword: raw.aiReword !== false,

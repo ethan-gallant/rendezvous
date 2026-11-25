@@ -42,8 +42,9 @@ function route() {
   main.replaceChildren();
   document.title = 'Rendezvous · find the days that work';
   const path = location.pathname.replace(/\/+$/, '') || '/';
-  const m = /^\/e\/([a-z0-9]{6,20})$/.exec(path);
-  if (m) cleanup = renderEvent(main, m[1]);
+  // /e/<event> is the event; /e/<event>/p/<poll> opens it at one of its day polls.
+  const m = /^\/e\/([a-z0-9]{6,20})(?:\/p\/([a-z0-9]{6,20}))?$/.exec(path);
+  if (m) cleanup = renderEvent(main, m[1], { pollId: m[2] || null });
   else if (path === '/') cleanup = renderCreate(main);
   else if (path === '/privacy') cleanup = renderPrivacy(main);
   else {

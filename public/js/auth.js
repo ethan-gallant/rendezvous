@@ -212,6 +212,8 @@ export function reportApiError(e, fallback = 'Something went wrong. Please try a
     slow_down: 'You’re going a bit fast. Wait a minute and try again.',
     too_many_events: 'You’ve created a lot of events today. Try again tomorrow.',
     event_full: 'This event has reached its response limit.',
+    locked: 'The organizer has locked availability, so that can’t be changed right now.',
+    too_many_polls: 'This event has as many day polls as it can hold. Delete one first.',
     bad_origin: 'Request blocked. Reload the page and try again.',
   };
   toast((e instanceof ApiError && messages[e.code]) || fallback);

@@ -12,12 +12,13 @@ import {
   tzAbbr, tzCity, tzOffsetMs, utcToZoned, zonedToUtc,
 } from './lib/time.js';
 import { openQuestionBuilder, buildQuestionnaire, buildSurveyResults, surveyText } from './questions.js';
+import { openPollBuilder, buildPoll, longDay } from './polls.js';
 import { calendarAvailable, requestCalendarToken, revokeCalendarToken, fetchBusy, fetchEvents, sampleCalendar } from './gcal.js';
 
 const SAVE_DELAY_MS = 600;
 const REFRESH_MS = 30_000;
 
-export function renderEvent(root, id) {
+export function renderEvent(root, id, { pollId = null } = {}) {
   let alive = true;
   const guestKey = `rdv-guest:${id}`;
   let guest = readGuest();
@@ -40,6 +41,9 @@ export function renderEvent(root, id) {
   let qKey = null;       // what the questionnaire card was last rendered for
   let qWasLocked;        // to notice the moment it unlocks
   let sKey = null;       // what the organizer's results card was last rendered for
+  let pKey = null;       // what the day-polls card was last rendered for
+  let pollJump = pollId; // the poll this link points at, until we've scrolled to it once
+  let simple = null;     // polls-only view for someone coming back to answer a follow-up; decided on first load
   const justCreated = !!history.state?.created;
   if (justCreated) history.replaceState(null, ''); // show the share banner once, not on every reload
 
@@ -74,6 +78,7 @@ export function renderEvent(root, id) {
       }
       qKey = null;
       sKey = null;
+      pKey = null;
       build();
       if (dirty && identity()) save();
     } catch (e) {
@@ -87,14 +92,16 @@ export function renderEvent(root, id) {
   }
 
   /** Pull in other people's answers without disturbing what's on screen. */
-  async function refresh() {
-    if (!data || !ui || document.visibilityState !== 'visible') return;
+  async function refresh({ force = false } = {}) {
+    if (!data || !ui || (!force && document.visibilityState !== 'visible')) return;
     try {
       const fresh = await api(`/events/${id}`, { guestToken: guest?.token });
       if (!alive || !ui) return;
-      const sig = (d) => JSON.stringify([d.responses, d.respondentCount, d.survey, d.event.questions, d.event.anonAnswers]);
+      const sig = (d) => JSON.stringify([d.responses, d.respondentCount, d.survey, d.event, d.polls]);
       const same = sig(fresh) === sig(data);
       if (same) return; // leave hover states and scroll positions alone
+      // The page is drawn around the event's settings, so a change to those (locked, questions) redraws it.
+      const eventChanged = JSON.stringify(fresh.event) !== JSON.stringify(data.event);
       data = fresh;
       if (!dirty && saveState !== 'saving') {
         mine = fromSlots(myResponse()?.slots, slotCount(data.event));
@@ -102,7 +109,10 @@ export function renderEvent(root, id) {
         if (JSON.stringify(theirs) !== JSON.stringify(answers)) qKey = null; // changed on another device
         setAnswers(theirs);
       }
-      ui.refreshAll();
+      if (eventChanged) {
+        qKey = sKey = pKey = null;
+        build();
+      } else ui.refreshAll();
     } catch { /* transient; try again next tick */ }
   }
 
@@ -147,11 +157,19 @@ export function renderEvent(root, id) {
       dirty = false;
       setSave('saved');
       ui?.refreshAll();
-      if (data.me.isOwner && data.event.questions.length) refresh(); // pick up the updated summary
+      // Pick up what the server recomputes: the organizer's summary, and who each day poll is waiting on.
+      if ((data.me.isOwner && data.event.questions.length) || data.polls?.length) refresh({ force: true });
     } catch (e) {
       if (!alive) return;
       if (e instanceof ApiError && e.status === 401) return setSave('needs-auth');
       if (e instanceof ApiError && e.code === 'domain_required') return load();
+      if (e instanceof ApiError && e.code === 'locked') {
+        // Locked while this page was open: drop the unsaved change and show what's actually saved.
+        dirty = false;
+        saveState = 'idle';
+        reportApiError(e);
+        return load();
+      }
       setSave('error');
       if (e instanceof ApiError && e.code === 'event_full') reportApiError(e);
     }
@@ -219,6 +237,11 @@ export function renderEvent(root, id) {
     const canSee = data.me.canSeeResults;
     const ranges = slotRanges(ev);
 
+    // Someone who already gave their days and comes back because of a follow-up poll gets just the
+    // polls, not the whole scheduling page. So does anyone arriving by a poll's own link. The organizer
+    // always gets the full page. Decided once, so the page never collapses under someone using it.
+    if (simple === null) simple = !data.me.isOwner && (data.polls?.length ?? 0) > 0 && (!!myResponse() || !!pollId);
+
     if (!mode) mode = canSee && myResponse() && data.responses.length > 1 ? 'group' : 'mine';
     if (!canSee) mode = 'mine';
     document.title = `${ev.title} · Rendezvous`;
@@ -284,6 +307,7 @@ export function renderEvent(root, id) {
       ev.domains.length > 0 && h('li', null, icon('lock', 16), `${ev.domains.map((d) => `@${d}`).join(', ')} only`),
       ev.allowGuests && h('li', null, icon('users', 16), 'No sign-in needed'),
       ev.hideResults && h('li', null, icon('eyeOff', 16), data.me.isOwner ? 'Only you see responses' : 'Only the organizer sees responses'),
+      ev.locked && h('li', null, icon('lock', 16), 'Availability locked'),
       h('li', null, avatar(ev.owner, 18), data.me.isOwner ? 'You’re the organizer' : `Organized by ${ev.owner.name}`),
       ev.expiresAt && h('li', { title: 'The event, everyone’s availability and all answers are deleted on this date.' }, icon('trash', 16),
         `Deleted automatically on ${fmtDate(new Date(ev.expiresAt).toISOString().slice(0, 10), { month: 'short', day: 'numeric', year: 'numeric' })}`),
@@ -293,6 +317,11 @@ export function renderEvent(root, id) {
       h('div', { class: 'ev-actions' },
         h('button', { class: 'btn', type: 'button', onClick: copyLink }, icon('link', 16), 'Copy link'),
         navigator.share && h('button', { class: 'btn', type: 'button', onClick: share }, icon('share', 16), 'Share'),
+        data.me.isOwner && h('button', {
+          class: `btn${ev.locked ? ' on' : ''}`, type: 'button', 'aria-pressed': ev.locked ? 'true' : 'false',
+          title: ev.locked ? 'Let people add or change their days again' : 'Freeze who has responded and which days they picked',
+          onClick: toggleLock,
+        }, icon('lock', 16), ev.locked ? 'Unlock' : 'Lock'),
         data.me.isOwner && h('button', { class: 'icon-btn', type: 'button', title: 'Edit name, note and preferred days', 'aria-label': 'Edit details', onClick: () => editDetails() }, icon('pencil', 18)),
         data.me.isOwner && h('button', {
           class: 'icon-btn', type: 'button', title: 'Delete event', 'aria-label': 'Delete event',
@@ -322,6 +351,16 @@ export function renderEvent(root, id) {
           nameList(prefList.map((d) => fmtDate(d, { weekday: 'long', month: 'short', day: 'numeric' })), 6))),
       ev.note && h('p', { class: 'ev-note' }, ev.note),
       prefList.length > 0 && h('p', { class: 'fine' }, 'Other days are still on the table. Mark every day you can make.'));
+
+    async function toggleLock() {
+      try {
+        const { locked } = await api(`/events/${id}/lock`, { method: 'PUT', body: { locked: !ev.locked } });
+        toast(locked ? 'Availability locked. Nobody can add or change their days until you unlock it.' : 'Availability unlocked.');
+        load({ keepDraft: !locked });
+      } catch (e) {
+        reportApiError(e, 'Couldn’t change the lock. Please try again.');
+      }
+    }
 
     async function editDetails() {
       const res = await openDialog((close) => {
@@ -381,6 +420,11 @@ export function renderEvent(root, id) {
     const tzNote = tzDiffers && h('p', { class: 'notice' }, icon('globe', 16),
       `Times are in ${tzCity(ev.tz)} time (${tzAbbr(ev.tz, probe)}). The small grey labels are your local time (${tzAbbr(viewerTz, probe)}).`);
 
+    const who = ev.owner.name.split(/\s+/)[0];
+    const lockNote = ev.locked && h('p', { class: 'notice lock-note' }, icon('lock', 16), data.me.isOwner
+      ? 'You’ve locked availability: nobody can add, change or remove their days until you unlock it. Day polls and questions can still be answered.'
+      : `${who} has locked availability, so days can’t be added or changed now. Day polls and questions can still be answered.`);
+
     // ---- grid card ----
     const tab = (value, label) => h('button', {
       type: 'button', class: 'seg-btn', role: 'tab', dataset: { value },
@@ -402,17 +446,16 @@ export function renderEvent(root, id) {
     const best = h('section', { class: 'card panel best' });
     const people = h('section', { class: 'card panel people' });
     const calCard = h('section', { class: 'card panel cal' });
+    const mineCard = h('section', { class: 'my-answer' });
+    const pollCard = h('section', { class: 'card panel polls' });
     const qCard = h('section', { class: 'card panel qcard' });
     const surveyCard = h('section', { class: 'card panel survey' });
     const savebar = h('div', { class: 'savebar', hidden: true });
 
-    root.replaceChildren(
-      h('div', { class: 'event' },
-        head, banner, prefNote, tzNote,
-        h('div', { class: 'ev-body' }, h('div', { class: 'main-col' }, gridCard, qCard, surveyCard), h('aside', { class: 'side' }, calCard, best, people)),
-      ),
-      savebar,
-    );
+    const page = h('div', { class: `event${simple ? ' simple' : ''}` },
+        head, banner, prefNote, tzNote, lockNote,
+        h('div', { class: 'ev-body' }, h('div', { class: 'main-col' }, mineCard, gridCard, pollCard, qCard, surveyCard), h('aside', { class: 'side' }, calCard, best, people)));
+    root.replaceChildren(page, savebar);
 
     // ---- painting ----
     attachPaint(grid.el, {
@@ -423,13 +466,13 @@ export function renderEvent(root, id) {
       },
       region: grid.region,
       neighbor: grid.neighbor,
-      enabled: () => mode === 'mine',
+      enabled: () => mode === 'mine' && !ev.locked,
       onCommit: changed,
       onActivate: (i) => showDetail(i),
     });
 
     const bulk = (indexes) => {
-      if (mode !== 'mine') return;
+      if (mode !== 'mine' || ev.locked) return;
       const allOn = indexes.every((i) => mine[i]);
       indexes.forEach((i) => { mine[i] = allOn ? 0 : 1; });
       refreshCells();
@@ -510,7 +553,8 @@ export function renderEvent(root, id) {
 
     function showDetail(i) {
       if (i == null) {
-        const hint = mode === 'mine'
+        const hint = mode === 'mine' && ev.locked ? 'Availability is locked, so this shows what was saved.'
+          : mode === 'mine'
           ? (isTouch()
             ? 'Tap to mark when you’re free. Press and hold, then drag, to paint a range.'
             : 'Click and drag over the times you’re free. It saves as you go.')
@@ -578,7 +622,7 @@ export function renderEvent(root, id) {
           prefSet.size > 0 && h('span', null, h('i', { class: 'sw sw-pref' }, '★'), 'Organizer’s preferred'));
 
       const actions = h('div', { class: 'foot-actions' });
-      if (mode === 'mine') {
+      if (mode === 'mine' && !ev.locked) {
         if (any) {
           actions.append(h('button', {
             class: 'link', type: 'button',
@@ -830,7 +874,7 @@ export function renderEvent(root, id) {
         kids.push(h('p', { class: 'muted small' }, 'Each day shows how long you’re busy. For a whole-day event, you decide what counts as a conflict.'));
       }
 
-      if (isTimes || cal.mode === 'details') {
+      if ((isTimes || cal.mode === 'details') && !ev.locked) {
         kids.push(h('button', {
           class: 'btn', type: 'button',
           onClick: () => {
@@ -854,7 +898,7 @@ export function renderEvent(root, id) {
       const locked = !myResponse();
       if (qWasLocked === true && !locked) {
         toast(`Saved. ${plural(qs.length, 'quick question')} below, if you have a minute.`, {
-          action: 'Show', onAction: () => qCard.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+          action: 'Show', onAction: () => { showEverything(); qCard.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
         });
       }
       qWasLocked = locked;
@@ -870,7 +914,8 @@ export function renderEvent(root, id) {
           ? 'Optional and anonymous: the organizer sees totals and comments, not who said what, and only in batches of several people.'
           : `Optional. ${data.me.isOwner ? 'You' : ev.owner.name} will see answers with names attached.`),
         ...(locked ? [h('p', { class: 'q-locked' }, icon('lock', 15),
-          isTimes ? 'Mark your times above first (or say none work), then these unlock.' : 'Mark your days above first (or say you can’t make any), then these unlock.')] : []),
+          ev.locked ? 'Availability is locked, so these are only open to people who had already answered.'
+            : isTimes ? 'Mark your times above first (or say none work), then these unlock.' : 'Mark your days above first (or say you can’t make any), then these unlock.')] : []),
         buildQuestionnaire({
           questions: qs, answers, locked, onChange: changed,
           reword: session.config.aiReword
@@ -931,6 +976,146 @@ export function renderEvent(root, id) {
       );
     }
 
+    // ---- day polls ----
+    const dayFree = (slots, d) => !!slots && slots.slice(d * per, (d + 1) * per).includes('1');
+    const guestToken = () => (session.user ? undefined : guest?.token);
+
+    async function addPoll() {
+      const counts = ev.dates.map((_, d) => data.responses.filter((r) => dayFree(r.slots, d)).length);
+      // Start on the day most people can make (a preferred day wins a tie), since that's the one being planned.
+      const lead = ev.dates.map((date, d) => ({ date, n: counts[d], pref: prefSet.has(date) }))
+        .sort((a, b) => b.n - a.n || b.pref - a.pref)[0];
+      const res = await openPollBuilder({ dates: ev.dates, freeCount: canSee ? counts : null, defaultDay: lead?.date });
+      if (!res) return;
+      try {
+        const { poll } = await api(`/events/${id}/polls`, { method: 'POST', body: res });
+        const link = `${url}/p/${poll.id}`;
+        toast('Poll added', { action: 'Copy link', onAction: async () => toast((await copyText(link)) ? 'Poll link copied' : 'Couldn’t copy the link') });
+        await refresh({ force: true });
+      } catch (e) {
+        reportApiError(e, 'Couldn’t add the poll. Please try again.');
+      }
+    }
+
+    async function votePoll(poll, choice) {
+      try {
+        await api(`/events/${id}/polls/${poll.id}/vote`, { method: 'PUT', body: { choice }, guestToken: guestToken() });
+        await refresh({ force: true });
+      } catch (e) {
+        if (e instanceof ApiError && e.code === 'not_available') {
+          toast(`That poll is for people who can make ${longDay(poll.day)}.`);
+          return load({ keepDraft: true });
+        }
+        reportApiError(e, 'Couldn’t save your answer. Please try again.');
+      }
+    }
+
+    /** "I can make that day after all": for whole-day events one press does it; for timed ones they pick the times. */
+    function addDay(d) {
+      if (isTimes) showEverything();
+      if (mode !== 'mine') setMode('mine');
+      const cells = Array.from({ length: per }, (_, k) => d * per + k);
+      if (!isTimes) {
+        mine[d] = 1;
+        refreshCells();
+        changed();
+        if (identity()) toast(`Added ${longDay(ev.dates[d])} to your days`);
+        return;
+      }
+      highlight = new Set(cells);
+      refreshCells();
+      requestAnimationFrame(() => grid.cells[cells[0]].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' }));
+      toast(`Mark the times you’re free on ${longDay(ev.dates[d])}. The poll opens up once that’s saved.`, { ms: 7000 });
+    }
+
+    /** Leave the polls-only view: bring back the calendar, the group's answers and the questions. */
+    function showEverything() {
+      if (!simple) return;
+      simple = false;
+      page.classList.remove('simple');
+      mode = 'mine';
+      refreshAll();
+    }
+
+    // The one line of context the polls-only view keeps: what this person said, and the way back to it.
+    function refreshMine() {
+      mineCard.hidden = !simple;
+      if (!simple) return;
+      const me = myResponse();
+      const days = me ? ev.dates.filter((_, d) => dayFree(me.slots, d)) : [];
+      const text = !me ? 'You haven’t given your availability for this event yet.'
+        : days.length === 0 ? (isTimes ? 'You said none of these times work for you.' : 'You said you can’t make any of these days.')
+          : `You’re free ${nameList(days.map((d) => fmtDate(d)), 4)}.`;
+      const label = ev.locked ? (me ? 'See my response' : 'See the event') : me ? 'Change my response' : 'Give my availability';
+      mineCard.replaceChildren(
+        h('span', null, icon(me ? 'check' : 'calendar', 16), text),
+        h('button', {
+          class: 'btn small', type: 'button',
+          onClick: () => { showEverything(); gridCard.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+        }, label));
+    }
+
+    function refreshPolls() {
+      const polls = data.polls || [];
+      const owner = data.me.isOwner;
+      pollCard.hidden = polls.length === 0 && !owner;
+      if (pollCard.hidden) return;
+      const me = myResponse();
+      const key = JSON.stringify([polls, me?.slots, !!identity(), pollJump]);
+      if (key === pKey) return;
+      pKey = key;
+
+      const add = owner && h('button', { class: 'btn small', type: 'button', onClick: addPoll }, icon('plus', 15), 'Add a poll');
+      const headRow = h('div', { class: 'panel-head' },
+        h('h2', null, icon('check', 18), 'Day polls', polls.length > 0 && h('span', { class: 'badge' }, polls.length)), add);
+      if (!polls.length) {
+        return pollCard.replaceChildren(headRow, h('p', { class: 'muted' },
+          'Once a day is looking likely, ask the people who can make it a quick either-or: co-work day or not, drinks and dinner or not. Each poll gets its own link.',
+          !ev.locked && ' Lock availability first if you want that group to stay put while you ask.'));
+      }
+      pollCard.replaceChildren(
+        headRow,
+        h('p', { class: 'fine' }, icon(canSee ? 'users' : 'eyeOff', 15), canSee
+          ? `Each one is for the people free that day. Answers are shown with names${ev.hideResults ? ', to you only' : ''}.`
+          : `Each one is for the people free that day. Only ${who} sees the answers, with your name.`),
+        h('div', { class: 'poll-list' }, polls.map((p) => {
+          const d = ev.dates.indexOf(p.day);
+          const link = `${url}/p/${p.id}`;
+          return buildPoll(p, {
+            free: dayFree(me?.slots, d),
+            answered: !!me,
+            isOwner: owner,
+            focused: p.id === pollId,
+            gate: {
+              locked: ev.locked, ownerName: who,
+              addLabel: isTimes ? `Add my times for ${fmtDate(p.day)}` : `I can make ${fmtDate(p.day)}`,
+              onAdd: () => addDay(d),
+            },
+            onVote: (choice) => votePoll(p, choice),
+            onCopy: async () => toast((await copyText(link)) ? 'Poll link copied' : 'Couldn’t copy the link'),
+            onDelete: async () => {
+              const ok = await confirmDialog({ title: 'Delete this poll?', text: `“${p.prompt}” and its answers will be removed. This can’t be undone.`, confirm: 'Delete poll', danger: true });
+              if (!ok) return;
+              try {
+                await api(`/events/${id}/polls/${p.id}`, { method: 'DELETE' });
+                await refresh({ force: true });
+              } catch (e) {
+                reportApiError(e);
+              }
+            },
+          });
+        })),
+      );
+
+      // Arrived by a poll's own link: bring that poll into view, once.
+      if (pollJump) {
+        const target = pollCard.querySelector(`[data-poll="${pollJump}"]`);
+        pollJump = null;
+        if (target) requestAnimationFrame(() => target.scrollIntoView({ block: 'center' }));
+        else toast('That poll isn’t here any more. The rest of the event is below.');
+      }
+    }
+
     function refreshAll() {
       refreshTabs();
       refreshCells();
@@ -939,6 +1124,8 @@ export function renderEvent(root, id) {
       refreshBest();
       refreshPeople();
       refreshCal();
+      refreshMine();
+      refreshPolls();
       refreshQuestionnaire();
       refreshSurvey();
       showDetail(null);
