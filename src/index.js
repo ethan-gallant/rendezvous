@@ -9,7 +9,7 @@
 // TLS, HSTS and DDoS handling are Cloudflare's job, not reimplemented here.
 
 import { settings, signInAllowed, domainAllowed } from './config.js';
-import { validateQuestions, cleanAnswers, summarize, parseJson, SurveyError } from './survey.js';
+import { validateQuestions, cleanAnswers, cleanRanking, tallyRankings, summarize, parseJson, SurveyError } from './survey.js';
 import { reword, REWORD_MIN_CHARS, REWORD_MAX_CHARS } from './reword.js';
 
 const ID_ALPHABET = 'abcdefghijkmnpqrstuvwxyz23456789'; // 32 chars, no look-alikes
@@ -86,7 +86,7 @@ async function handleApi(request, env, url) {
         // City-level guess from the connection, used only to open maps somewhere sensible. Not stored.
         geo: roughGeo(request),
       },
-      user: session && publicUser(session),
+      user: session && selfUser(env, session),
     });
   }
 
@@ -103,7 +103,7 @@ async function handleApi(request, env, url) {
       hd: claims.hd ? String(claims.hd).toLowerCase() : null,
     };
     if (!signInAllowed(user, s)) throw new HttpError(403, 'domain_not_allowed', { domains: s.allowedDomains });
-    return json({ user: publicUser(user) }, 200, { 'set-cookie': await sessionCookie(user, env, url, s) });
+    return json({ user: selfUser(env, user) }, 200, { 'set-cookie': await sessionCookie(user, env, url, s) });
   }
 
   if (route === 'POST /auth/dev') {
@@ -120,7 +120,7 @@ async function handleApi(request, env, url) {
       hd: domain === 'gmail.com' ? null : domain,
     };
     if (!signInAllowed(user, s)) throw new HttpError(403, 'domain_not_allowed', { domains: s.allowedDomains });
-    return json({ user: publicUser(user) }, 200, { 'set-cookie': await sessionCookie(user, env, url, s) });
+    return json({ user: selfUser(env, user) }, 200, { 'set-cookie': await sessionCookie(user, env, url, s) });
   }
 
   if (route === 'POST /auth/logout') {
@@ -149,7 +149,7 @@ async function handleApi(request, env, url) {
 
   if (route === 'POST /events') {
     if (!session) throw new HttpError(401, 'sign_in_required');
-    const input = validateEvent(await readJson(request), s);
+    const input = validateEvent(await readJson(request), s, hasExtras(env, session));
     const now = Date.now();
     const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM events WHERE owner_sub = ? AND created_at > ?')
       .bind(session.sub, now - DAY_MS).first();
@@ -338,19 +338,19 @@ async function handleApi(request, env, url) {
 
     if (seg.length === 3 && seg[2] === 'polls' && method === 'POST') {
       if (!isOwner) throw new HttpError(403, 'forbidden');
-      const poll = validatePoll(await readJson(request), event);
+      const poll = validatePoll(await readJson(request), event, hasExtras(env, session));
       const { n } = await env.DB.prepare('SELECT COUNT(*) AS n FROM day_polls WHERE event_id = ?').bind(id).first();
       if (n >= s.maxDayPolls) throw new HttpError(409, 'too_many_polls', { limit: s.maxDayPolls });
       const pid = randomId(8);
-      await env.DB.prepare('INSERT INTO day_polls (id, event_id, day, prompt, options, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(pid, id, poll.day, poll.prompt, JSON.stringify(poll.options), Date.now()).run();
+      await env.DB.prepare('INSERT INTO day_polls (id, event_id, day, prompt, options, kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(pid, id, poll.day, poll.prompt, packOptions(poll), poll.kind ?? 'pick', Date.now()).run();
       return json({ poll: { id: pid, ...poll } }, 201);
     }
 
     if (seg[2] === 'polls' && seg[3]) {
       const pid = seg[3];
       const poll = /^[a-z0-9]{6,20}$/.test(pid)
-        ? await env.DB.prepare('SELECT id, day, options FROM day_polls WHERE id = ? AND event_id = ?').bind(pid, id).first()
+        ? await env.DB.prepare('SELECT id, day, options, kind FROM day_polls WHERE id = ? AND event_id = ?').bind(pid, id).first()
         : null;
       if (!poll) throw new HttpError(404, 'not_found');
 
@@ -371,12 +371,21 @@ async function handleApi(request, env, url) {
         if (!mine || !freeOnDay(event, mine.slots, event.dates.indexOf(poll.day))) {
           throw new HttpError(403, 'not_available', { day: poll.day });
         }
-        const { choice } = await readJson(request);
-        if (choice === null) {
+        const { choice, ranking } = await readJson(request);
+        const { options, off, last } = unpackOptions(poll.options);
+        const ranked = poll.kind === 'rank' ? cleanRanking(options.length, off, last, ranking) : null;
+        if (ranked ? ranked.length === 0 : choice === null) {
           await env.DB.prepare('DELETE FROM day_poll_votes WHERE poll_id = ? AND user_key = ?').bind(pid, myKey).run();
-          return json({ myVote: null });
+          return json(ranked ? { myRanking: [] } : { myVote: null });
         }
-        if (!Number.isInteger(choice) || choice < 0 || choice >= parseJson(poll.options, []).length) {
+        if (ranked) {
+          await env.DB.prepare(
+            `INSERT INTO day_poll_votes (poll_id, event_id, user_key, choice, ranking) VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (poll_id, user_key) DO UPDATE SET choice = excluded.choice, ranking = excluded.ranking`,
+          ).bind(pid, id, myKey, ranked[0], JSON.stringify(ranked)).run();
+          return json({ myRanking: ranked });
+        }
+        if (!Number.isInteger(choice) || choice < 0 || choice >= options.length || off.includes(choice)) {
           throw new HttpError(400, 'bad_choice');
         }
         await env.DB.prepare(
@@ -390,7 +399,7 @@ async function handleApi(request, env, url) {
     if (seg.length === 3 && seg[2] === 'questions' && method === 'PUT') {
       if (!isOwner) throw new HttpError(403, 'forbidden');
       const body = await readJson(request);
-      const questions = questionsOrThrow(body.questions, s);
+      const questions = questionsOrThrow(body.questions, s, hasExtras(env, session));
       const anon = body.anonAnswers !== false;
       const writes = [env.DB.prepare('UPDATE events SET questions = ?, anon_answers = ? WHERE id = ?')
         .bind(JSON.stringify(questions), anon ? 1 : 0, id)];
@@ -425,6 +434,21 @@ async function handleApi(request, env, url) {
 
 function publicUser(u) {
   return { email: u.email, name: u.name, picture: u.picture, hd: u.hd };
+}
+
+/**
+ * Extra organizer options, for the addresses listed in EXTRAS_FOR (comma-separated; a secret or
+ * var, so no address has to live in the repository). Checked here on every request that uses one:
+ * the page only hides the controls, it does not grant them.
+ */
+function hasExtras(env, user) {
+  if (!user?.email || !env.EXTRAS_FOR) return false;
+  return String(env.EXTRAS_FOR).toLowerCase().split(/[\s,]+/).includes(user.email);
+}
+
+/** The signed-in person as their own browser sees them. */
+function selfUser(env, u) {
+  return hasExtras(env, u) ? { ...publicUser(u), extras: true } : publicUser(u);
 }
 
 function publicEvent(row) {
@@ -484,14 +508,43 @@ function freeOnDay(event, slots, d) {
   return slots.slice(d * per, (d + 1) * per).includes('1');
 }
 
-function validatePoll(b, event) {
+function validatePoll(b, event, allowOff = false) {
   const bad = (field) => new HttpError(400, 'invalid', { field });
   if (!event.dates.includes(b.day)) throw bad('day');
   const prompt = cleanText(b.prompt, 160);
   if (!prompt) throw bad('prompt');
-  const options = [...new Set((Array.isArray(b.options) ? b.options : []).map((o) => cleanText(o, 80)).filter(Boolean))];
-  if (options.length < 2 || options.length > 6) throw bad('options');
-  return { day: b.day, prompt, options };
+  const kind = b.kind === 'rank' ? 'rank' : 'pick';
+  // `off` marks choices that are shown but can't be picked; `last` marks the one choice of a ranked
+  // poll that can only be put last. Both are only honoured for organizers with extras.
+  const marked = new Set(allowOff && Array.isArray(b.off) ? b.off : []);
+  const lastIn = allowOff && kind === 'rank' && Number.isInteger(b.last) ? b.last : -1;
+  const kept = [];
+  for (const [k, raw] of (Array.isArray(b.options) ? b.options : []).entries()) {
+    const label = cleanText(raw, 80);
+    if (label && !kept.some((o) => o.label === label)) kept.push({ label, off: marked.has(k), last: k === lastIn && !marked.has(k) });
+  }
+  const off = kept.flatMap((o, k) => (o.off ? [k] : []));
+  const last = kept.findIndex((o) => o.last);
+  if (kept.length - off.length - (last >= 0 ? 1 : 0) < 2 || kept.length > 6) throw bad('options');
+  const poll = { day: b.day, prompt, options: kept.map((o) => o.label) };
+  if (kind === 'rank') poll.kind = 'rank';
+  if (off.length) poll.off = off;
+  if (last >= 0) poll.last = last;
+  return poll;
+}
+
+// Stored as a JSON list: a plain string per ordinary choice, { label, off: true } for an unpickable
+// one, { label, last: true } for a last-place-only one.
+const packOptions = (poll) => JSON.stringify(poll.options.map((label, k) => (
+  poll.off?.includes(k) ? { label, off: true } : poll.last === k ? { label, last: true } : label)));
+function unpackOptions(text) {
+  const list = parseJson(text, []);
+  const last = list.findIndex((o) => typeof o === 'object' && o?.last);
+  return {
+    options: list.map((o) => (typeof o === 'string' ? o : String(o?.label ?? ''))),
+    off: list.flatMap((o, k) => (typeof o === 'object' && o?.off ? [k] : [])),
+    last: last >= 0 ? last : null,
+  };
 }
 
 /**
@@ -501,19 +554,39 @@ function validatePoll(b, event) {
  */
 async function readPolls(env, event, responses, myKey, canSee) {
   const [polls, votes] = await env.DB.batch([
-    env.DB.prepare('SELECT id, day, prompt, options FROM day_polls WHERE event_id = ? ORDER BY created_at, id').bind(event.id),
-    env.DB.prepare('SELECT poll_id, user_key, choice FROM day_poll_votes WHERE event_id = ?').bind(event.id),
+    env.DB.prepare('SELECT id, day, prompt, options, kind FROM day_polls WHERE event_id = ? ORDER BY created_at, id').bind(event.id),
+    env.DB.prepare('SELECT poll_id, user_key, choice, ranking FROM day_poll_votes WHERE event_id = ?').bind(event.id),
   ]);
   return polls.results.map((p) => {
-    const options = parseJson(p.options, []);
+    const { options, off, last } = unpackOptions(p.options);
     const d = event.dates.indexOf(p.day);
     const free = responses.filter((r) => freeOnDay(event, r.slots, d));
     const byKey = new Map(free.map((r) => [r.user_key, r]));
-    const counted = votes.results.filter((v) => v.poll_id === p.id && byKey.has(v.user_key) && v.choice < options.length);
+    const counted = votes.results.filter((v) => v.poll_id === p.id && byKey.has(v.user_key) && v.choice < options.length && !off.includes(v.choice));
     const out = {
       id: p.id, day: p.day, prompt: p.prompt, options,
       myVote: counted.find((v) => v.user_key === myKey)?.choice ?? null,
     };
+    if (off.length) out.off = off;
+    if (p.kind === 'rank') {
+      // Ranked: each answer is an order, and the totals are points (see tallyRankings).
+      const rankings = votes.results.filter((v) => v.poll_id === p.id && byKey.has(v.user_key))
+        .map((v) => ({ key: v.user_key, name: byKey.get(v.user_key).name, ranking: cleanRanking(options.length, off, last, parseJson(v.ranking ?? '[]', [])) }))
+        .filter((v) => v.ranking.length);
+      out.kind = 'rank';
+      out.myVote = null;
+      out.myRanking = rankings.find((v) => v.key === myKey)?.ranking ?? [];
+      if (last !== null) out.last = last;
+      if (canSee) {
+        const t = tallyRankings(options.length, off, last, rankings);
+        const voted = new Set(rankings.map((v) => v.key));
+        out.eligible = free.length;
+        out.points = t.points;
+        out.voters = t.who;
+        out.waiting = free.filter((r) => !voted.has(r.user_key)).map((r) => r.name);
+      }
+      return out;
+    }
     if (canSee) {
       const voted = new Set(counted.map((v) => v.user_key));
       out.eligible = free.length;
@@ -537,7 +610,7 @@ function validDate(s) {
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
 }
 
-function validateEvent(b, s) {
+function validateEvent(b, s, extras = false) {
   const bad = (field) => new HttpError(400, 'invalid', { field });
   const title = cleanText(b.title, 120);
   if (!title) throw bad('title');
@@ -582,7 +655,7 @@ function validateEvent(b, s) {
     allowGuests: !!b.allowGuests && domains.length === 0 && s.allowGuestResponses,
     hideResults: !!b.hideResults,
     preferred: pickPreferred(b.preferred, dates),
-    questions: questionsOrThrow(b.questions, s),
+    questions: questionsOrThrow(b.questions, s, extras),
     anonAnswers: b.anonAnswers !== false,
   };
 }
@@ -598,9 +671,9 @@ function roughGeo(request) {
   return { lat: Math.round(lat * 10) / 10, lng: Math.round(lng * 10) / 10 };
 }
 
-function questionsOrThrow(input, s) {
+function questionsOrThrow(input, s, allowOff = false) {
   try {
-    return validateQuestions(input, { max: s.maxQuestions });
+    return validateQuestions(input, { max: s.maxQuestions, allowOff });
   } catch (e) {
     if (e instanceof SurveyError) throw new HttpError(400, 'invalid', { field: 'questions' });
     throw e;

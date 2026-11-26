@@ -23,6 +23,8 @@
   //   SESSION_SECRET  signs sign-in sessions
   //   ANON_SECRET     keys anonymous questionnaire answers. Never rotate this one casually:
   //                   doing so permanently cuts people off from the answers they gave.
+  //   EXTRAS_FOR      optional. Comma-separated email addresses whose owners get extra organizer
+  //                   options. Kept out of this file so no address is committed.
 
   "vars": {
     // Public OAuth client ID (Google Cloud console → Credentials → OAuth client ID, type "Web application").

@@ -4,6 +4,8 @@
 import { h, icon, openDialog, toast, nameList, plural } from './ui.js';
 import { viewPicker, areaInput, areaResults, areaSummaryLine, defaultView } from './map.js';
 import { session } from './auth.js';
+import { OFF_TITLE, LAST_TITLE } from './polls.js';
+import { rankInput, rankResults, rankLines, RANK_HINT } from './ranking.js';
 
 const maxQuestions = () => session.config.maxQuestions ?? 12;
 const MAX_OPTIONS = 10;
@@ -11,8 +13,8 @@ const MAX_OPTIONS = 10;
 const LIKELY = ['Very likely', 'Likely', 'Not sure', 'Unlikely', 'Very unlikely'];
 const YES_NO = ['Yes', 'Maybe', 'No'];
 
-const TYPE_LABEL = { single: 'Pick one', multi: 'Pick any', text: 'Written answer', area: 'Map: how far they’d travel' };
-const hasChoices = (type) => type === 'single' || type === 'multi';
+const TYPE_LABEL = { single: 'Pick one', multi: 'Pick any', rank: 'Rank in order', text: 'Written answer', area: 'Map: how far they’d travel' };
+const hasChoices = (type) => type === 'single' || type === 'multi' || type === 'rank';
 
 /**
  * Starter questions. The holiday set is built around things an organizer can
@@ -67,7 +69,11 @@ const shape = (q) => JSON.stringify([q.type, hasChoices(q.type) ? q.options : []
  */
 export function openQuestionBuilder({ questions = [], anonAnswers = true, anonLocked = false, answered = 0 } = {}) {
   return openDialog((close) => {
-    const items = questions.map((q) => ({ id: q.id, type: q.type, prompt: q.prompt, options: [...(q.options || [])], view: q.view, was: shape(q) }));
+    // `off[k]` marks choice k as shown-but-unpickable. Only offered (and only honoured by the server) for organizers with extras.
+    const extras = !!session.user?.extras;
+    const offFlags = (q) => (q.options || []).map((_, k) => !!q.off?.includes(k));
+    // `last` is the index of the one choice of a ranking that can only be put last (same gate).
+    const items = questions.map((q) => ({ id: q.id, type: q.type, prompt: q.prompt, options: [...(q.options || [])], off: offFlags(q), last: q.last ?? null, view: q.view, was: shape(q) }));
     let anon = anonAnswers;
 
     const list = h('div', { class: 'qb-list' });
@@ -76,7 +82,7 @@ export function openQuestionBuilder({ questions = [], anonAnswers = true, anonLo
 
     function add(q, focus = false) {
       if (items.length >= maxQuestions()) return toast(`That’s the limit: ${maxQuestions()} questions.`);
-      items.push({ id: newId(), type: q.type, prompt: q.prompt, options: [...(q.options || [])], view: q.type === 'area' ? defaultView() : undefined, was: null });
+      items.push({ id: newId(), type: q.type, prompt: q.prompt, options: [...(q.options || [])], off: offFlags(q), last: q.last ?? null, view: q.type === 'area' ? defaultView() : undefined, was: null });
       render();
       const el = list.lastElementChild;
       el?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -93,7 +99,7 @@ export function openQuestionBuilder({ questions = [], anonAnswers = true, anonLo
           'aria-label': 'Answer type',
           onChange: () => {
             q.type = type.value;
-            if (hasChoices(q.type) && q.options.length < 2) q.options = [...YES_NO];
+            if (hasChoices(q.type) && q.options.length < 2) { q.options = [...YES_NO]; q.off = []; q.last = null; }
             if (q.type === 'area') q.view ??= defaultView();
             render();
           },
@@ -116,13 +122,15 @@ export function openQuestionBuilder({ questions = [], anonAnswers = true, anonLo
               type: 'text', maxLength: 80, value: opt, placeholder: `Choice ${k + 1}`, 'aria-label': `Choice ${k + 1}`,
               onInput: () => { q.options[k] = input.value; },
             });
-            return h('div', { class: 'qb-opt' }, h('i', { class: q.type === 'single' ? 'mark radio' : 'mark box' }), input,
-              h('button', { class: 'icon-btn small', type: 'button', 'aria-label': 'Remove choice', disabled: q.options.length <= 2, onClick: () => { q.options.splice(k, 1); render(); } }, icon('x', 14)));
+            return h('div', { class: `qb-opt${q.off[k] ? ' off' : ''}` }, h('i', { class: q.type === 'multi' ? 'mark box' : 'mark radio' }), input,
+              extras && q.type === 'rank' && h('button', { class: `mini-toggle${q.last === k ? ' on' : ''}`, type: 'button', title: LAST_TITLE, 'aria-label': `Choice ${k + 1}: last only`, 'aria-pressed': q.last === k ? 'true' : 'false', onClick: () => { q.last = q.last === k ? null : k; if (q.last === k) q.off[k] = false; render(); } }, 'Last'),
+              extras && h('button', { class: `icon-btn small${q.off[k] ? ' on' : ''}`, type: 'button', title: OFF_TITLE, 'aria-label': `Choice ${k + 1}: greyed out`, 'aria-pressed': q.off[k] ? 'true' : 'false', onClick: () => { q.off[k] = !q.off[k]; if (q.off[k] && q.last === k) q.last = null; render(); } }, icon('eyeOff', 14)),
+              h('button', { class: 'icon-btn small', type: 'button', 'aria-label': 'Remove choice', disabled: q.options.length <= 2, onClick: () => { q.options.splice(k, 1); q.off.splice(k, 1); q.last = q.last === k ? null : q.last > k ? q.last - 1 : q.last; render(); } }, icon('x', 14)));
           })));
           kids.push(h('div', { class: 'qb-opt-actions' },
             q.options.length < MAX_OPTIONS && h('button', { class: 'link', type: 'button', onClick: () => { q.options.push(''); render(); list.children[n].querySelector('.qb-opt:last-child input')?.focus(); } }, 'Add choice'),
-            h('button', { class: 'link', type: 'button', onClick: () => { q.options = [...YES_NO]; render(); } }, 'Yes / Maybe / No'),
-            h('button', { class: 'link', type: 'button', onClick: () => { q.options = [...LIKELY]; render(); } }, 'Likelihood scale'),
+            h('button', { class: 'link', type: 'button', onClick: () => { q.options = [...YES_NO]; q.off = []; q.last = null; render(); } }, 'Yes / Maybe / No'),
+            h('button', { class: 'link', type: 'button', onClick: () => { q.options = [...LIKELY]; q.off = []; q.last = null; render(); } }, 'Likelihood scale'),
           ));
         }
         return h('div', { class: 'qb-item' }, kids);
@@ -158,14 +166,17 @@ export function openQuestionBuilder({ questions = [], anonAnswers = true, anonLo
           out.push(q.type === 'area' ? { id, type: 'area', prompt, view: q.view } : { id, type: 'text', prompt });
           continue;
         }
-        const options = q.options.map((o) => o.trim()).filter(Boolean);
-        if (options.length < 2) {
-          toast(`Question ${n + 1} needs at least two choices.`);
+        const kept = q.options.map((o, k) => ({ text: o.trim(), off: !!q.off[k], last: q.type === 'rank' && q.last === k })).filter((o) => o.text);
+        const options = kept.map((o) => o.text);
+        const off = kept.flatMap((o, k) => (o.off ? [k] : []));
+        const last = kept.findIndex((o) => o.last);
+        if (options.length - off.length - (last >= 0 ? 1 : 0) < 2) {
+          toast(off.length || last >= 0 ? `Question ${n + 1} needs at least two ordinary choices.` : `Question ${n + 1} needs at least two choices.`);
           list.children[n]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
           return;
         }
         const next = { type: q.type, prompt, options };
-        out.push({ id: q.was && q.was !== shape(next) ? newId() : q.id, ...next });
+        out.push({ id: q.was && q.was !== shape(next) ? newId() : q.id, ...next, ...(off.length ? { off } : {}), ...(last >= 0 ? { last } : {}) });
       }
       close({ questions: out, anonAnswers: anon });
     }
@@ -254,10 +265,24 @@ export function buildQuestionnaire({ questions, answers, locked, onChange, rewor
       return h('div', { class: 'q' }, kids);
     }
 
+    if (q.type === 'rank') {
+      return h('div', { class: 'q' }, legend,
+        rankInput({
+          options: q.options, off: q.off, last: q.last ?? null, value: answers[q.id] || [], disabled: locked, label: q.prompt,
+          onChange: (order) => {
+            if (order.length) answers[q.id] = order;
+            else delete answers[q.id];
+            onChange();
+          },
+        }),
+        h('span', { class: 'q-hint' }, RANK_HINT));
+    }
+
     const multi = q.type === 'multi';
     const isOn = (k) => (multi ? (answers[q.id] || []).includes(k) : answers[q.id] === k);
+    const isOff = (k) => !!q.off?.includes(k); // shown, but not a choice anyone can make
     const buttons = q.options.map((opt, k) => h('button', {
-      type: 'button', class: 'q-choice', role: multi ? 'checkbox' : 'radio', disabled: locked,
+      type: 'button', class: `q-choice${isOff(k) ? ' off' : ''}`, role: multi ? 'checkbox' : 'radio', disabled: locked || isOff(k),
       onClick: () => {
         if (multi) {
           const set = new Set(answers[q.id] || []);
@@ -316,8 +341,14 @@ export function buildSurveyResults({ questions, survey, anon }) {
         r.n ? h('ul', { class: 'sr-texts' }, r.texts.map((t) => h('li', null, h('span', null, t.text), t.name && h('em', null, t.name))))
           : h('p', { class: 'muted small' }, 'Nobody has written anything yet.'));
     }
+    if (q.type === 'rank') {
+      return h('div', { class: 'sr-q' }, head,
+        rankResults({ options: q.options, off: q.off, last: q.last ?? null, points: r.points, firsts: r.firsts, who: anon ? null : r.who }),
+        r.n > 0 && h('span', { class: 'q-hint' }, 'Points: a first place is worth the most, each place after that one less.'));
+    }
     const top = Math.max(1, ...r.counts || [0]);
     return h('div', { class: 'sr-q' }, head, h('div', { class: 'sr-bars' }, q.options.map((opt, k) => {
+      if (q.off?.includes(k)) return null; // nobody could pick it, so there is nothing to chart
       const c = r.counts?.[k] ?? 0;
       const pct = r.n ? Math.round((c / r.n) * 100) : 0;
       const bar = h('i');
@@ -343,8 +374,11 @@ export function surveyText({ title, questions, survey, anon }) {
       lines.push(`  (shown once ${survey.min} people have answered)`);
     } else if (q.type === 'text') {
       for (const t of r.texts || []) lines.push(`  - ${t.text.replace(/\s*\n\s*/g, ' ')}${t.name ? ` (${t.name})` : ''}`);
+    } else if (q.type === 'rank') {
+      lines.push(...rankLines({ options: q.options, off: q.off, last: q.last ?? null, points: r.points, firsts: r.firsts, who: r.who }));
     } else {
       q.options.forEach((opt, k) => {
+        if (q.off?.includes(k)) return;
         const c = r.counts?.[k] ?? 0;
         lines.push(`  ${String(c).padStart(3)}  ${r.n ? `${Math.round((c / r.n) * 100)}%`.padStart(4) : '   -'}  ${opt}`);
       });

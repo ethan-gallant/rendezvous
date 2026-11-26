@@ -640,3 +640,21 @@ textarea::placeholder { color: var(--faint); }
 .event.simple :is(.ev-meta, .ev-actions, .pref-note, .notice:not(.lock-note), .grid-card, .qcard, .survey, .side) { display: none; }
 .event.simple .polls { padding: 0; border: 0; background: none; box-shadow: none; }
 .event.simple .polls .panel-head { display: none; }
+
+/* Choices that are shown but can't be picked. */
+.q-choice.off, .poll-opt.off { opacity: 0.45; cursor: default; }
+.qb-opt.off input[type="text"] { color: var(--muted); border-style: dashed; }
+.icon-btn.on { background: var(--surface-2); color: var(--ink); }
+
+/* Ranking input */
+.rank { display: grid; gap: 7px; }
+.rank-opt { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 9px 12px; min-height: 44px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); font-size: 14.5px; font-weight: 550; }
+.rank-opt:hover:not(:disabled) { border-color: var(--ink); }
+.rank-opt.on { border-color: var(--good); background: var(--good-soft); color: var(--good-ink); }
+.rank-opt:disabled { cursor: default; color: var(--muted); }
+.rank-opt.off { opacity: 0.45; }
+.rank-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.rank-badge { flex: none; display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 999px; border: 1.5px dashed var(--line-strong); font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.rank-opt.on .rank-badge { border: 0; background: var(--good); color: var(--on-good); }
+.mini-toggle { flex: none; border: 1px solid var(--line-strong); background: none; border-radius: 999px; padding: 3px 9px; font-size: 12px; font-weight: 650; color: var(--muted); }
+.mini-toggle.on { background: var(--ink); border-color: var(--ink); color: var(--surface); }

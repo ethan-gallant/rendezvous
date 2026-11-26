@@ -22,8 +22,13 @@ export function parseJson(text, fallback) {
   }
 }
 
-/** Normalises an organizer's question list, or throws SurveyError. */
-export function validateQuestions(input, { max = MAX_QUESTIONS } = {}) {
+/**
+ * Normalises an organizer's question list, or throws SurveyError.
+ * `allowOff` lets a choice be marked as shown-but-unpickable (`off`: indexes into `options`),
+ * and lets a ranking question mark one choice as last-place-only (`last`: its index). Without
+ * it any such marks are dropped and every choice is an ordinary one.
+ */
+export function validateQuestions(input, { max = MAX_QUESTIONS, allowOff = false } = {}) {
   if (input == null) return [];
   if (!Array.isArray(input) || input.length > max) throw new SurveyError('too many questions');
   const seen = new Set();
@@ -40,10 +45,21 @@ export function validateQuestions(input, { max = MAX_QUESTIONS } = {}) {
       if (![lat, lng, zoom].every(Number.isFinite) || Math.abs(lat) > 85 || Math.abs(lng) > 180) throw new SurveyError('bad view');
       return { id, type: 'area', prompt, view: { lat: round(lat, 3), lng: round(lng, 3), zoom: Math.min(16, Math.max(1, zoom)) } };
     }
-    if (q.type !== 'single' && q.type !== 'multi') throw new SurveyError('bad type');
-    const options = (Array.isArray(q.options) ? q.options : []).map((o) => oneLine(o, 80)).filter(Boolean);
-    if (options.length < 2 || options.length > MAX_OPTIONS) throw new SurveyError('bad options');
-    return { id, type: q.type, prompt, options };
+    if (q.type !== 'single' && q.type !== 'multi' && q.type !== 'rank') throw new SurveyError('bad type');
+    const marked = new Set(allowOff && Array.isArray(q.off) ? q.off : []);
+    const lastIn = allowOff && q.type === 'rank' && Number.isInteger(q.last) ? q.last : -1;
+    const kept = (Array.isArray(q.options) ? q.options : [])
+      .map((o, k) => ({ label: oneLine(o, 80), off: marked.has(k), last: k === lastIn && !marked.has(k) }))
+      .filter((o) => o.label);
+    const options = kept.map((o) => o.label);
+    const off = kept.flatMap((o, k) => (o.off ? [k] : []));
+    const last = kept.findIndex((o) => o.last);
+    // Two ordinary choices at least, whatever else is on the list.
+    if (options.length - off.length - (last >= 0 ? 1 : 0) < 2 || options.length > MAX_OPTIONS) throw new SurveyError('bad options');
+    const out = { id, type: q.type, prompt, options };
+    if (off.length) out.off = off;
+    if (last >= 0) out.last = last;
+    return out;
   });
 }
 
@@ -56,7 +72,7 @@ export function validateQuestions(input, { max = MAX_QUESTIONS } = {}) {
 export function cleanAnswers(questions, input) {
   const out = {};
   if (!input || typeof input !== 'object') return out;
-  const inRange = (q) => (v) => Number.isInteger(v) && v >= 0 && v < q.options.length;
+  const inRange = (q) => (v) => Number.isInteger(v) && v >= 0 && v < q.options.length && !q.off?.includes(v);
   for (const q of questions) {
     const v = input[q.id];
     if (q.type === 'text') {
@@ -65,6 +81,9 @@ export function cleanAnswers(questions, input) {
     } else if (q.type === 'area') {
       const area = cleanArea(v);
       if (area) out[q.id] = area;
+    } else if (q.type === 'rank') {
+      const ranking = cleanRanking(q.options.length, q.off, q.last, v);
+      if (ranking.length) out[q.id] = ranking;
     } else if (q.type === 'single') {
       if (inRange(q)(v)) out[q.id] = v;
     } else if (Array.isArray(v)) {
@@ -73,6 +92,49 @@ export function cleanAnswers(questions, input) {
     }
   }
   return out;
+}
+
+/**
+ * A ranking: choice indexes, favourite first. Ranking only some of the choices is fine.
+ * Unpickable choices are dropped, and a last-place-only choice, if picked at all, always
+ * ends up at the end, wherever the client put it.
+ */
+export function cleanRanking(count, off, last, input) {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const v of input) {
+    if (!Number.isInteger(v) || v < 0 || v >= count || seen.has(v) || off?.includes(v)) continue;
+    seen.add(v);
+    if (v !== last) out.push(v);
+  }
+  if (Number.isInteger(last) && seen.has(last)) out.push(last);
+  return out;
+}
+
+/**
+ * Adds rankings up. With n ordinary choices, a first place is worth n points, second n-1, and so
+ * on; a choice someone left out gets nothing from them. `firsts` and `who` count first places,
+ * except for a last-place-only choice, where they count the people who picked it.
+ */
+export function tallyRankings(count, off, last, rankings) {
+  const ordinary = count - (off?.length ?? 0) - (Number.isInteger(last) ? 1 : 0);
+  const points = Array(count).fill(0);
+  const firsts = Array(count).fill(0);
+  const who = Array.from({ length: count }, () => []);
+  let n = 0;
+  for (const { name, ranking } of rankings) {
+    if (!ranking.length) continue;
+    n++;
+    ranking.forEach((k, place) => {
+      if (k !== last) points[k] += ordinary - place;
+      if (k === last || place === 0) {
+        firsts[k]++;
+        who[k].push(name);
+      }
+    });
+  }
+  return { n, points, firsts, who };
 }
 
 const round = (n, places) => Math.round(n * 10 ** places) / 10 ** places;
@@ -189,6 +251,11 @@ export function summarize(questions, rows, anon, min = ANON_MIN) {
       const texts = people.filter((p) => p.a[q.id]).map((p) => (anon ? { text: p.a[q.id] } : { text: p.a[q.id], name: p.name }));
       if (anon) texts.sort((x, y) => x.text.localeCompare(y.text));
       out[q.id] = { n: texts.length, texts };
+      continue;
+    }
+    if (q.type === 'rank') {
+      const t = tallyRankings(q.options.length, q.off, q.last, people.filter((p) => p.a[q.id]).map((p) => ({ name: p.name, ranking: p.a[q.id] })));
+      out[q.id] = anon ? { n: t.n, points: t.points, firsts: t.firsts } : t;
       continue;
     }
     const counts = q.options.map(() => 0);

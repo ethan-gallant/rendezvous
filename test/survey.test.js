@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateQuestions, cleanAnswers, cleanArea, coverage, summarize, SurveyError, ANON_MIN } from '../src/survey.js';
+import { validateQuestions, cleanAnswers, cleanArea, cleanRanking, coverage, summarize, SurveyError, ANON_MIN } from '../src/survey.js';
 
 const qs = validateQuestions([
   { id: 'qfam1', type: 'single', prompt: '  Family-friendly party?  ', options: ['Very likely', 'Not sure', '', 'Unlikely'] },
@@ -120,4 +120,34 @@ test('pins and other answers reach the anonymity threshold separately', () => {
   assert.equal(s.questions.qmap1.n, 3);
   assert.ok(s.questions.qmap1.grid);
   assert.deepEqual(s.questions.qtxt9, { n: 1, hidden: true }); // one comment is not shown on its own
+});
+
+test('unpickable choices are kept only when allowed, and are never a valid answer', () => {
+  const input = [{ id: 'qoff1', type: 'multi', prompt: 'Snacks?', options: ['Chips', 'Fruit', 'Not offered'], off: [2, 9] }];
+  assert.equal(validateQuestions(input)[0].off, undefined);
+  const [q] = validateQuestions(input, { allowOff: true });
+  assert.deepEqual(q.off, [2]);
+  assert.deepEqual(cleanAnswers([q], { qoff1: [0, 2] }), { qoff1: [0] });
+  assert.deepEqual(cleanAnswers([q], { qoff1: [2] }), {});
+  assert.throws(() => validateQuestions([{ ...input[0], off: [1, 2] }], { allowOff: true }), 'needs two real choices');
+});
+
+test('ranking questions: validation, cleaning and the points tally', () => {
+  const input = [{ id: 'qrank1', type: 'rank', prompt: 'Dinner?', options: ['Thai', 'Pizza', 'Tacos', 'Not offered'], last: 3 }];
+  assert.equal(validateQuestions(input)[0].last, undefined, 'the last-only mark needs allowOff');
+  const [q] = validateQuestions(input, { allowOff: true });
+  assert.equal(q.last, 3);
+  assert.throws(() => validateQuestions([{ ...input[0], options: ['Thai', 'Not offered'], last: 1 }], { allowOff: true }), 'two ordinary choices are needed');
+
+  assert.deepEqual(cleanRanking(4, [], 3, [3, 2, 2, 0, 'x', 7]), [2, 0, 3]);
+  assert.deepEqual(cleanAnswers([q], { qrank1: [3, 1] }), { qrank1: [1, 3] });
+  assert.deepEqual(cleanAnswers([q], { qrank1: 'nope' }), {});
+
+  const rows = [['Ana', [1, 0, 3]], ['Ben', [0, 2, 1]], ['Cy', [1]]].map(([name, r]) => ({ name, answers: JSON.stringify({ qrank1: r }) }));
+  const named = summarize([q], rows, false).questions.qrank1;
+  assert.deepEqual([named.n, named.points, named.firsts], [3, [5, 7, 2, 0], [1, 2, 0, 1]]);
+  assert.deepEqual(named.who, [['Ben'], ['Ana', 'Cy'], [], ['Ana']]);
+  const anon = summarize([q], rows, true).questions.qrank1;
+  assert.deepEqual(anon.points, [5, 7, 2, 0]);
+  assert.equal(anon.who, undefined, 'anonymous results carry no names');
 });

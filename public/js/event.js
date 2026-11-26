@@ -985,7 +985,7 @@ export function renderEvent(root, id, { pollId = null } = {}) {
       // Start on the day most people can make (a preferred day wins a tie), since that's the one being planned.
       const lead = ev.dates.map((date, d) => ({ date, n: counts[d], pref: prefSet.has(date) }))
         .sort((a, b) => b.n - a.n || b.pref - a.pref)[0];
-      const res = await openPollBuilder({ dates: ev.dates, freeCount: canSee ? counts : null, defaultDay: lead?.date });
+      const res = await openPollBuilder({ dates: ev.dates, freeCount: canSee ? counts : null, defaultDay: lead?.date, extras: !!session.user?.extras });
       if (!res) return;
       try {
         const { poll } = await api(`/events/${id}/polls`, { method: 'POST', body: res });
@@ -997,9 +997,17 @@ export function renderEvent(root, id, { pollId = null } = {}) {
       }
     }
 
-    async function votePoll(poll, choice) {
+    // A ranking is built one tap at a time, so it is sent once the taps pause.
+    const rankTimers = new Map();
+    function votePoll(poll, value) {
+      if (poll.kind !== 'rank') return sendVote(poll, { choice: value });
+      clearTimeout(rankTimers.get(poll.id));
+      rankTimers.set(poll.id, setTimeout(() => sendVote(poll, { ranking: value }), 700));
+    }
+
+    async function sendVote(poll, body) {
       try {
-        await api(`/events/${id}/polls/${poll.id}/vote`, { method: 'PUT', body: { choice }, guestToken: guestToken() });
+        await api(`/events/${id}/polls/${poll.id}/vote`, { method: 'PUT', body, guestToken: guestToken() });
         await refresh({ force: true });
       } catch (e) {
         if (e instanceof ApiError && e.code === 'not_available') {

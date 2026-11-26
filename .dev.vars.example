@@ -6,3 +6,5 @@ ANON_SECRET=replace-with-another-64-random-hex-chars
 DEV_LOGIN=1
 # Optional locally: your OAuth web client ID, to test real Google sign-in.
 # GOOGLE_CLIENT_ID=1234567890-abc.apps.googleusercontent.com
+# Optional: comma-separated email addresses whose owners get extra organizer options.
+# EXTRAS_FOR=you@example.com

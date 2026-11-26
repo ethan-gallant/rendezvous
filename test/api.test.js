@@ -395,3 +395,80 @@ test('events created before day polls existed gain them with no changes', async 
   assert.equal((await call(ana, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 0 })).status, 200);
   assert.equal((await call(ana, 'PUT', `/events/${id}/lock`, { locked: true })).body.locked, true);
 });
+
+test('unpickable choices are only for listed organizers, and nobody can pick one', async () => {
+  const { call, signIn } = await boot({}, { EXTRAS_FOR: 'Ana@acme.test, someone@else.test' });
+  const ana = await signIn('ana@acme.test', 'Ana');
+  const ben = await signIn('ben@acme.test', 'Ben');
+  assert.equal(ana.body.user.extras, true);
+  assert.equal(ben.body.user.extras, undefined);
+  assert.equal((await call(ana, 'GET', '/session')).body.user.extras, true);
+  assert.equal((await call(ben, 'GET', '/session')).body.user.extras, undefined);
+  assert.ok(!JSON.stringify((await call(ben, 'GET', '/session')).body).includes('acme.test, '), 'the list itself is never sent');
+
+  const withOff = [{ id: 'qone1', type: 'single', prompt: 'Dinner?', options: ['Yes', '', 'No', 'Not offered'], off: [3] }];
+  const { id } = (await call(ana, 'POST', '/events', newEvent({ questions: withOff, anonAnswers: false }))).body;
+  const q = (await call(ben, 'GET', `/events/${id}`)).body.event.questions[0];
+  assert.deepEqual([q.options, q.off], [['Yes', 'No', 'Not offered'], [2]], 'marks follow their choice when a blank one is dropped');
+
+  // Not pickable, by anyone, however the request is made.
+  await call(ben, 'PUT', `/events/${id}/response`, { slots: '110', answers: { qone1: 2 } });
+  assert.deepEqual((await call(ben, 'GET', `/events/${id}`)).body.responses.find((r) => r.mine).answers, {});
+  await call(ben, 'PUT', `/events/${id}/response`, { slots: '110', answers: { qone1: 1 } });
+  assert.deepEqual((await call(ben, 'GET', `/events/${id}`)).body.responses.find((r) => r.mine).answers, { qone1: 1 });
+
+  const made = await call(ana, 'POST', `/events/${id}/polls`, { day: DAYS[0], prompt: 'Co-work day?', options: ['Yes', 'No', 'Not offered'], off: [2] });
+  assert.deepEqual([made.status, made.body.poll.off], [201, [2]]);
+  const pid = made.body.poll.id;
+  assert.equal((await call(ben, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 2 })).status, 400);
+  assert.equal((await call(ben, 'PUT', `/events/${id}/polls/${pid}/vote`, { choice: 1 })).status, 200);
+  const poll = (await call(ben, 'GET', `/events/${id}`)).body.polls[0];
+  assert.deepEqual([poll.options, poll.off, poll.voters], [['Yes', 'No', 'Not offered'], [2], [[], ['Ben'], []]]);
+  // Two real choices are still required.
+  assert.equal((await call(ana, 'POST', `/events/${id}/polls`, { day: DAYS[0], prompt: 'x', options: ['Yes', 'Nope'], off: [1] })).status, 400);
+
+  // Someone not on the list sending the same thing gets ordinary choices.
+  const { id: bens } = (await call(ben, 'POST', '/events', newEvent({ questions: withOff }))).body;
+  assert.equal((await call(ben, 'GET', `/events/${bens}`)).body.event.questions[0].off, undefined);
+  const plain = (await call(ben, 'POST', `/events/${bens}/polls`, { day: DAYS[0], prompt: 'Dinner?', options: ['Yes', 'No', 'Maybe'], off: [2] })).body.poll;
+  assert.equal(plain.off, undefined);
+  await call(ben, 'PUT', `/events/${bens}/response`, { slots: '100' });
+  assert.equal((await call(ben, 'PUT', `/events/${bens}/polls/${plain.id}/vote`, { choice: 2 })).status, 200);
+});
+
+test('ranked day polls: orders are tallied as points, and a last-only choice stays last', async () => {
+  const { call, signIn } = await boot({}, { EXTRAS_FOR: 'ana@acme.test' });
+  const ana = await signIn('ana@acme.test', 'Ana');
+  const ben = await signIn('ben@acme.test', 'Ben');
+  const cy = await signIn('cy@acme.test', 'Cy');
+  const { id } = (await call(ana, 'POST', '/events', newEvent())).body;
+  for (const who of [ana, ben, cy]) await call(who, 'PUT', `/events/${id}/response`, { slots: '100' });
+
+  const made = (await call(ana, 'POST', `/events/${id}/polls`, {
+    day: DAYS[0], kind: 'rank', prompt: 'Where for dinner?', options: ['Thai', 'Pizza', 'Tacos', 'Not offered'], last: 3,
+  })).body.poll;
+  assert.deepEqual([made.kind, made.last], ['rank', 3]);
+  const rank = (who, ranking) => call(who, 'PUT', `/events/${id}/polls/${made.id}/vote`, { ranking });
+
+  // The last-only choice goes to the end wherever it was sent; junk and repeats are dropped.
+  assert.deepEqual((await rank(ana, [3, 1, 0, 1, 9])).body.myRanking, [1, 0, 3]);
+  assert.deepEqual((await rank(ben, [0, 2, 1])).body.myRanking, [0, 2, 1]);
+  assert.deepEqual((await rank(cy, [1])).body.myRanking, [1], 'ranking only some is fine');
+
+  const poll = (await call(ben, 'GET', `/events/${id}`)).body.polls[0];
+  assert.deepEqual([poll.kind, poll.last, poll.myRanking], ['rank', 3, [0, 2, 1]]);
+  // Three ordinary choices: 3 points for a first place, 2 for second, 1 for third.
+  assert.deepEqual(poll.points, [2 + 3, 3 + 1 + 3, 2, 0]);
+  assert.deepEqual(poll.voters, [['Ben'], ['Ana', 'Cy'], [], ['Ana']], 'first places, and who picked the last-only choice');
+  assert.deepEqual(poll.waiting, []);
+
+  assert.deepEqual((await rank(cy, [])).body.myRanking, [], 'an empty order withdraws the answer');
+  assert.deepEqual((await call(ana, 'GET', `/events/${id}`)).body.polls[0].waiting, ['Cy']);
+
+  // Without extras the mark is ignored and the choice ranks like any other.
+  const { id: bens } = (await call(ben, 'POST', '/events', newEvent())).body;
+  await call(ben, 'PUT', `/events/${bens}/response`, { slots: '100' });
+  const plain = (await call(ben, 'POST', `/events/${bens}/polls`, { day: DAYS[0], kind: 'rank', prompt: 'Dinner?', options: ['A', 'B', 'C'], last: 2 })).body.poll;
+  assert.equal(plain.last, undefined);
+  assert.deepEqual((await call(ben, 'PUT', `/events/${bens}/polls/${plain.id}/vote`, { ranking: [2, 0] })).body.myRanking, [2, 0]);
+});

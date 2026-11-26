@@ -4,6 +4,7 @@
 
 import { h, icon, openDialog, plural, nameList } from './ui.js';
 import { fmtDate } from './lib/time.js';
+import { rankInput, rankResults, RANK_HINT } from './ranking.js';
 
 const MAX_OPTIONS = 6;
 const IDEAS = [
@@ -14,21 +15,30 @@ const IDEAS = [
 
 export const longDay = (day) => fmtDate(day, { weekday: 'long', month: 'short', day: 'numeric' });
 
-/** Organizer's dialog. Resolves with { day, prompt, options } or null. */
-export function openPollBuilder({ dates, freeCount, defaultDay }) {
+/** A choice can be shown greyed out and unpickable. Only offered to organizers the server lists for extras. */
+export const OFF_TITLE = 'Show greyed out: visible, but can’t be picked';
+/** In a ranking, one choice can be limited to last place. Same gate. */
+export const LAST_TITLE = 'Can only be ranked last';
+
+/** Organizer's dialog. Resolves with { day, prompt, kind, options, off, last } or null. */
+export function openPollBuilder({ dates, freeCount, defaultDay, extras = false }) {
   return openDialog((close) => {
     const day = h('select', { 'aria-label': 'Day' }, dates.map((d, k) => h('option', { value: d },
       freeCount ? `${longDay(d)} · ${freeCount[k]} free` : longDay(d))));
     day.value = defaultDay || dates[0];
     const prompt = h('input', { type: 'text', maxLength: 160, placeholder: 'Co-work day?', 'aria-label': 'Question' });
-    let options = ['', ''];
+    let options = [{ text: '', off: false }, { text: '', off: false }];
+    const kind = h('select', { 'aria-label': 'How people answer', onChange: () => draw() },
+      h('option', { value: 'pick' }, 'Pick one'), h('option', { value: 'rank' }, 'Rank in order of preference'));
     const list = h('div', { class: 'qb-opts' });
-    const addBtn = h('button', { class: 'link', type: 'button', onClick: () => { options.push(''); draw(); list.lastChild.querySelector('input').focus(); } }, 'Add choice');
+    const addBtn = h('button', { class: 'link', type: 'button', onClick: () => { options.push({ text: '', off: false }); draw(); list.lastChild.querySelector('input').focus(); } }, 'Add choice');
 
     function draw() {
-      list.replaceChildren(...options.map((value, k) => h('div', { class: 'qb-opt' },
+      list.replaceChildren(...options.map((o, k) => h('div', { class: `qb-opt${o.off ? ' off' : ''}` },
         h('span', { class: 'poll-radio', 'aria-hidden': 'true' }),
-        h('input', { type: 'text', maxLength: 80, value, placeholder: k === 0 ? 'Co-work day' : k === 1 ? 'No co-work day' : 'Another choice', 'aria-label': `Choice ${k + 1}`, onInput: (e) => { options[k] = e.target.value; } }),
+        h('input', { type: 'text', maxLength: 80, value: o.text, placeholder: k === 0 ? 'Co-work day' : k === 1 ? 'No co-work day' : 'Another choice', 'aria-label': `Choice ${k + 1}`, onInput: (e) => { o.text = e.target.value; } }),
+        extras && kind.value === 'rank' && h('button', { class: `mini-toggle${o.last ? ' on' : ''}`, type: 'button', title: LAST_TITLE, 'aria-label': `Choice ${k + 1}: last only`, 'aria-pressed': o.last ? 'true' : 'false', onClick: () => { const next = !o.last; options.forEach((x) => { x.last = false; }); o.last = next; if (next) o.off = false; draw(); } }, 'Last'),
+        extras && h('button', { class: `icon-btn small${o.off ? ' on' : ''}`, type: 'button', title: OFF_TITLE, 'aria-label': `Choice ${k + 1}: greyed out`, 'aria-pressed': o.off ? 'true' : 'false', onClick: () => { o.off = !o.off; if (o.off) o.last = false; draw(); } }, icon('eyeOff', 15)),
         h('button', { class: 'icon-btn small', type: 'button', 'aria-label': `Remove choice ${k + 1}`, disabled: options.length <= 2, onClick: () => { options.splice(k, 1); draw(); } }, icon('x', 15)),
       )));
       addBtn.hidden = options.length >= MAX_OPTIONS;
@@ -39,7 +49,8 @@ export function openPollBuilder({ dates, freeCount, defaultDay }) {
       class: 'chip', type: 'button',
       onClick: () => {
         if (idea.prompt) prompt.value = idea.prompt;
-        options = [...idea.options];
+        kind.value = 'pick';
+        options = idea.options.map((text) => ({ text, off: false }));
         draw();
         (idea.prompt ? list.querySelector('input') : prompt).focus();
       },
@@ -50,18 +61,26 @@ export function openPollBuilder({ dates, freeCount, defaultDay }) {
       class: 'dialog-body',
       onSubmit: (e) => {
         e.preventDefault();
-        const clean = [...new Set(options.map((o) => o.trim()).filter(Boolean))];
-        const problem = !prompt.value.trim() ? 'Write the question first.' : clean.length < 2 ? 'Give at least two different choices.' : '';
+        const clean = [];
+        for (const o of options) {
+          const text = o.text.trim();
+          if (text && !clean.some((c) => c.text === text)) clean.push({ text, off: o.off, last: kind.value === 'rank' && !!o.last });
+        }
+        const special = clean.some((o) => o.off || o.last);
+        const problem = !prompt.value.trim() ? 'Write the question first.'
+          : clean.filter((o) => !o.off && !o.last).length < 2 ? (special ? 'Give at least two ordinary choices.' : 'Give at least two different choices.') : '';
         error.textContent = problem;
         error.hidden = !problem;
-        if (!problem) close({ day: day.value, prompt: prompt.value.trim(), options: clean });
+        const last = clean.findIndex((o) => o.last);
+        if (!problem) close({ day: day.value, prompt: prompt.value.trim(), kind: kind.value, options: clean.map((o) => o.text), off: clean.flatMap((o, k) => (o.off ? [k] : [])), ...(last >= 0 ? { last } : {}) });
       },
     },
       h('h2', null, 'Ask about one day'),
-      h('p', { class: 'muted' }, 'A quick either-or for the people who can make that day. Anyone who didn’t mark the day is told so, and can add it unless you’ve locked availability.'),
+      h('p', { class: 'muted' }, 'A quick question for the people who can make that day. Anyone who didn’t mark the day is told so, and can add it unless you’ve locked availability.'),
       h('label', { class: 'field' }, h('span', null, 'Day'), day),
       h('label', { class: 'field' }, h('span', null, 'Question'), prompt),
-      h('div', { class: 'field' }, h('span', null, 'Choices (people pick one)'), list, h('div', { class: 'qb-opt-actions' }, addBtn)),
+      h('label', { class: 'field' }, h('span', null, 'How people answer'), kind),
+      h('div', { class: 'field' }, h('span', null, 'Choices'), list, h('div', { class: 'qb-opt-actions' }, addBtn)),
       h('div', { class: 'field' }, h('span', null, 'Ideas'), ideas),
       error,
       h('div', { class: 'dialog-actions' },
@@ -81,7 +100,20 @@ export function buildPoll(poll, { free, answered, isOwner, focused, gate, onVote
   const shown = Array.isArray(poll.voters); // names and totals, when this viewer may see them
   const total = shown ? poll.voters.reduce((n, v) => n + v.length, 0) : 0;
 
-  const options = h('div', { class: 'poll-opts', role: 'radiogroup', 'aria-label': poll.prompt }, poll.options.map((label, k) => {
+  const ranked = poll.kind === 'rank';
+  const options = ranked ? h('div', { class: 'poll-opts' },
+    rankInput({
+      options: poll.options, off: poll.off, last: poll.last ?? null, value: poll.myRanking || [], disabled: !free, label: poll.prompt,
+      onChange: (order) => onVote(order),
+    }),
+    free && h('p', { class: 'q-hint' }, RANK_HINT),
+    shown && total > 0 && rankResults({ options: poll.options, off: poll.off, last: poll.last ?? null, points: poll.points, who: poll.voters }),
+  ) : h('div', { class: 'poll-opts', role: 'radiogroup', 'aria-label': poll.prompt }, poll.options.map((label, k) => {
+    if (poll.off?.includes(k)) {
+      // Shown, never pickable, and left out of the tally.
+      return h('div', { class: 'poll-row' }, h('button', { type: 'button', class: 'poll-opt off', role: 'radio', 'aria-checked': 'false', disabled: true },
+        h('span', { class: 'poll-radio', 'aria-hidden': 'true' }), h('span', { class: 'poll-label' }, label)));
+    }
     const on = poll.myVote === k;
     const names = shown ? poll.voters[k] : [];
     const btn = h('button', {

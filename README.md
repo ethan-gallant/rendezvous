@@ -76,6 +76,12 @@ Everything an operator would want to change lives in `wrangler.jsonc`:
 | `anonBatch` | `3` | Anonymous answers reach the organizer in batches of at least this many people. |
 | `aiReword`, `aiModel` | `true`, a small Llama model | The "Paraphrase to anonymize" button on written answers. Remove the `ai` binding to switch it off entirely. |
 
+One more is set as a secret rather than in the file, so no address is committed: `EXTRAS_FOR`, a
+comma-separated list of email addresses. An organizer signed in with one of them gets extra options
+when setting things up; at present that is marking a choice in a question or day poll as shown but
+not pickable, and marking one choice of a ranking as last place only. The Worker checks the list on
+every save and enforces both marks on every answer.
+
 Per-minute rate limits are the two `ratelimits` entries in the same file: `WRITE_LIMIT` (anything that
 changes data, per person) and `AI_LIMIT` (paraphrase presses, per signed-in person, or per address for name-only guests).
 
@@ -101,6 +107,9 @@ Once a day is looking likely, the organizer can add a **day poll**: one either-o
 day ("Co-work day?" / "No co-work day", "Drinks + dinner?" / "No drinks or dinner"), from the event page.
 It can be added at any time, including to events created before this feature existed.
 
+- **Pick one or rank.** A poll either asks for one choice or asks people to rank the choices by tapping
+  them in order (ranking only some is fine). Rankings are added up as points: with n choices a first
+  place is worth n, second n-1, and so on.
 - **Who is asked.** Only people whose saved availability includes that day can answer. The Worker checks
   this against the database on every answer; the page's own idea of who is free is not trusted.
 - **The link.** Every poll has its own link (`/e/<event>/p/<poll>`), and the event's ordinary link works
@@ -122,7 +131,7 @@ be answered while locked, which is the point: fix the group first, then ask it t
 ## Follow-up questionnaire
 
 An organizer can attach up to 12 questions when creating an event or later from the event page:
-pick one, pick any, written answer, or a map ("how far would you travel"). Participants see them once
+pick one, pick any, rank in order, written answer, or a map ("how far would you travel"). Participants see them once
 their availability is saved; every question is optional. Answers go to the organizer only.
 
 The map question lets a person drop a pin roughly where they'll be coming from and size three rings
