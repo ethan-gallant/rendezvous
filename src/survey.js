@@ -97,7 +97,9 @@ export function cleanAnswers(questions, input) {
 /**
  * A ranking: choice indexes, favourite first. Ranking only some of the choices is fine.
  * Unpickable choices are dropped, and a last-place-only choice, if picked at all, always
- * ends up at the end, wherever the client put it.
+ * ends up at the end, wherever the client put it. That choice is an extra, not an answer in
+ * itself: it only counts alongside at least one ordinary choice, so on its own the ranking
+ * is empty.
  */
 export function cleanRanking(count, off, last, input) {
   if (!Array.isArray(input)) return [];
@@ -108,7 +110,7 @@ export function cleanRanking(count, off, last, input) {
     seen.add(v);
     if (v !== last) out.push(v);
   }
-  if (Number.isInteger(last) && seen.has(last)) out.push(last);
+  if (Number.isInteger(last) && seen.has(last) && out.length) out.push(last);
   return out;
 }
 

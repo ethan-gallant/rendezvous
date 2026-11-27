@@ -464,6 +464,8 @@ test('ranked day polls: orders are tallied as points, and a last-only choice sta
   assert.deepEqual(poll.waiting, []);
 
   assert.deepEqual((await rank(cy, [])).body.myRanking, [], 'an empty order withdraws the answer');
+  assert.deepEqual((await rank(cy, [3])).body.myRanking, [], 'the last-only choice alone is not an answer');
+  assert.deepEqual((await call(ana, 'GET', `/events/${id}`)).body.polls[0].voters[3], ['Ana'], 'and is not counted');
   assert.deepEqual((await call(ana, 'GET', `/events/${id}`)).body.polls[0].waiting, ['Cy']);
 
   // Without extras the mark is ignored and the choice ranks like any other.

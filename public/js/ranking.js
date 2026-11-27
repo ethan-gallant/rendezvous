@@ -8,7 +8,8 @@ export const RANK_HINT = 'Tap in order, favourite first. Leave out any you’d s
 /**
  * Tap choices in order of preference; each shows its place. Ranking only some is fine.
  *   off   indexes that are shown but can't be picked
- *   last  index of a choice that can only ever be put last, or null
+ *   last  index of a choice that can only ever be put last, or null. It is an extra on top of a
+ *         real answer, so it can't be picked until an ordinary choice has been.
  */
 export function rankInput({ options, off = [], last = null, value = [], disabled = false, label, onChange }) {
   let order = [...value];
@@ -18,13 +19,16 @@ export function rankInput({ options, off = [], last = null, value = [], disabled
       const isOff = off.includes(k);
       const place = order.indexOf(k);
       const picked = place >= 0;
+      const hasReal = order.some((x) => x !== last);
       return h('button', {
         type: 'button', class: `rank-opt${picked ? ' on' : ''}${isOff ? ' off' : ''}`,
-        disabled: disabled || isOff, 'aria-pressed': picked ? 'true' : 'false',
+        disabled: disabled || isOff || (k === last && !hasReal), 'aria-pressed': picked ? 'true' : 'false',
         'aria-label': picked ? `${text}: ${k === last ? 'last' : `number ${place + 1}`}` : text,
         onClick: () => {
-          if (picked) order = order.filter((x) => x !== k);
-          else if (k === last || last === null || !order.includes(last)) order = [...order, k];
+          if (picked) {
+            order = order.filter((x) => x !== k);
+            if (!order.some((x) => x !== last)) order = []; // the extra goes when the last real choice does
+          } else if (k === last || last === null || !order.includes(last)) order = [...order, k];
           else order = [...order.filter((x) => x !== last), k, last]; // keep the last-only one at the end
           draw();
           onChange([...order]);

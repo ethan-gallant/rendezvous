@@ -79,7 +79,8 @@ Everything an operator would want to change lives in `wrangler.jsonc`:
 One more is set as a secret rather than in the file, so no address is committed: `EXTRAS_FOR`, a
 comma-separated list of email addresses. An organizer signed in with one of them gets extra options
 when setting things up; at present that is marking a choice in a question or day poll as shown but
-not pickable, and marking one choice of a ranking as last place only. The Worker checks the list on
+not pickable, and marking one choice of a ranking as last place only (it can be added to a ranking
+but is not an answer on its own). The Worker checks the list on
 every save and enforces both marks on every answer.
 
 Per-minute rate limits are the two `ratelimits` entries in the same file: `WRITE_LIMIT` (anything that

@@ -140,6 +140,8 @@ test('ranking questions: validation, cleaning and the points tally', () => {
   assert.throws(() => validateQuestions([{ ...input[0], options: ['Thai', 'Not offered'], last: 1 }], { allowOff: true }), 'two ordinary choices are needed');
 
   assert.deepEqual(cleanRanking(4, [], 3, [3, 2, 2, 0, 'x', 7]), [2, 0, 3]);
+  assert.deepEqual(cleanRanking(4, [], 3, [3]), [], 'the last-only choice is not an answer on its own');
+  assert.deepEqual(cleanAnswers([q], { qrank1: [3] }), {});
   assert.deepEqual(cleanAnswers([q], { qrank1: [3, 1] }), { qrank1: [1, 3] });
   assert.deepEqual(cleanAnswers([q], { qrank1: 'nope' }), {});
 
