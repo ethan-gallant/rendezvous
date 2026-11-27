@@ -583,6 +583,7 @@ async function readPolls(env, event, responses, myKey, canSee) {
         out.eligible = free.length;
         out.points = t.points;
         out.voters = t.who;
+        out.skipped = t.skipWho; // answered, but left this choice out
         out.waiting = free.filter((r) => !voted.has(r.user_key)).map((r) => r.name);
       }
       return out;

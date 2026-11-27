@@ -343,8 +343,8 @@ export function buildSurveyResults({ questions, survey, anon }) {
     }
     if (q.type === 'rank') {
       return h('div', { class: 'sr-q' }, head,
-        rankResults({ options: q.options, off: q.off, last: q.last ?? null, points: r.points, firsts: r.firsts, who: anon ? null : r.who }),
-        r.n > 0 && h('span', { class: 'q-hint' }, 'Points: a first place is worth the most, each place after that one less.'));
+        rankResults({ options: q.options, off: q.off, last: q.last ?? null, points: r.points, firsts: r.firsts, who: anon ? null : r.who, skips: r.skips, skipWho: anon ? null : r.skipWho }),
+        r.n > 0 && h('span', { class: 'q-hint' }, 'Points: a first place is worth the most, each place after that one less. “Would skip” counts people who answered but left that choice out.'));
     }
     const top = Math.max(1, ...r.counts || [0]);
     return h('div', { class: 'sr-q' }, head, h('div', { class: 'sr-bars' }, q.options.map((opt, k) => {
@@ -375,7 +375,7 @@ export function surveyText({ title, questions, survey, anon }) {
     } else if (q.type === 'text') {
       for (const t of r.texts || []) lines.push(`  - ${t.text.replace(/\s*\n\s*/g, ' ')}${t.name ? ` (${t.name})` : ''}`);
     } else if (q.type === 'rank') {
-      lines.push(...rankLines({ options: q.options, off: q.off, last: q.last ?? null, points: r.points, firsts: r.firsts, who: r.who }));
+      lines.push(...rankLines({ options: q.options, off: q.off, last: q.last ?? null, points: r.points, firsts: r.firsts, who: r.who, skips: r.skips, skipWho: r.skipWho }));
     } else {
       q.options.forEach((opt, k) => {
         if (q.off?.includes(k)) return;

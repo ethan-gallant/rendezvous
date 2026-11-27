@@ -108,8 +108,11 @@ day ("Co-work day?" / "No co-work day", "Drinks + dinner?" / "No drinks or dinne
 It can be added at any time, including to events created before this feature existed.
 
 - **Pick one or rank.** A poll either asks for one choice or asks people to rank the choices by tapping
-  them in order (ranking only some is fine). Rankings are added up as points: with n choices a first
-  place is worth n, second n-1, and so on.
+  them in order. Rankings are added up as points: with n choices a first place is worth n, second
+  n-1, and so on. People are told to leave out anything they would skip, so the results also list,
+  for each choice, who answered but left it out, and flag the choice the fewest people would skip.
+  That is the number to read when the question is "which option loses the fewest people", which is
+  not always the one with the most points.
 - **Who is asked.** Only people whose saved availability includes that day can answer. The Worker checks
   this against the database on every answer; the page's own idea of who is free is not trusted.
 - **The link.** Every poll has its own link (`/e/<event>/p/<poll>`), and the event's ordinary link works

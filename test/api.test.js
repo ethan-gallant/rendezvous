@@ -460,6 +460,7 @@ test('ranked day polls: orders are tallied as points, and a last-only choice sta
   // Three ordinary choices: 3 points for a first place, 2 for second, 1 for third.
   assert.deepEqual(poll.points, [2 + 3, 3 + 1 + 3, 2, 0]);
   assert.deepEqual(poll.voters, [['Ben'], ['Ana', 'Cy'], [], ['Ana']], 'first places, and who picked the last-only choice');
+  assert.deepEqual(poll.skipped, [['Cy'], [], ['Ana', 'Cy'], []], 'who answered but left each ordinary choice out');
   assert.deepEqual(poll.waiting, []);
 
   assert.deepEqual((await rank(cy, [])).body.myRanking, [], 'an empty order withdraws the answer');

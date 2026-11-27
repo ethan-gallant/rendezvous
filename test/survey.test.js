@@ -149,5 +149,8 @@ test('ranking questions: validation, cleaning and the points tally', () => {
   assert.deepEqual(named.who, [['Ben'], ['Ana', 'Cy'], [], ['Ana']]);
   const anon = summarize([q], rows, true).questions.qrank1;
   assert.deepEqual(anon.points, [5, 7, 2, 0]);
+  assert.deepEqual([named.skips, named.skipWho], [[1, 0, 2, 0], [['Cy'], [], ['Ana', 'Cy'], []]], 'left out by people who answered');
+  assert.deepEqual(anon.skips, [1, 0, 2, 0]);
   assert.equal(anon.who, undefined, 'anonymous results carry no names');
+  assert.equal(anon.skipWho, undefined);
 });

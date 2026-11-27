@@ -116,16 +116,27 @@ export function cleanRanking(count, off, last, input) {
  * Adds rankings up. With n ordinary choices, a first place is worth n points, second n-1, and so
  * on; a choice someone left out gets nothing from them. `firsts` and `who` count first places,
  * except for a last-place-only choice, where they count the people who picked it.
+ *
+ * People are told to leave out anything they would skip, so `skips` and `skipWho` record, for each
+ * ordinary choice, the people who answered but left it out. Someone who hasn't answered at all is
+ * not counted as skipping anything.
  */
 export function tallyRankings(count, off, last, rankings) {
   const ordinary = count - (off?.length ?? 0) - (Number.isInteger(last) ? 1 : 0);
   const points = Array(count).fill(0);
   const firsts = Array(count).fill(0);
   const who = Array.from({ length: count }, () => []);
+  const skips = Array(count).fill(0);
+  const skipWho = Array.from({ length: count }, () => []);
   let n = 0;
   for (const { name, ranking } of rankings) {
     if (!ranking.length) continue;
     n++;
+    for (let k = 0; k < count; k++) {
+      if (k === last || off?.includes(k) || ranking.includes(k)) continue;
+      skips[k]++;
+      skipWho[k].push(name);
+    }
     ranking.forEach((k, place) => {
       if (k !== last) points[k] += ordinary - place;
       if (k === last || place === 0) {
@@ -134,7 +145,7 @@ export function tallyRankings(count, off, last, rankings) {
       }
     });
   }
-  return { n, points, firsts, who };
+  return { n, points, firsts, who, skips, skipWho };
 }
 
 const round = (n, places) => Math.round(n * 10 ** places) / 10 ** places;
@@ -255,7 +266,7 @@ export function summarize(questions, rows, anon, min = ANON_MIN) {
     }
     if (q.type === 'rank') {
       const t = tallyRankings(q.options.length, q.off, q.last, people.filter((p) => p.a[q.id]).map((p) => ({ name: p.name, ranking: p.a[q.id] })));
-      out[q.id] = anon ? { n: t.n, points: t.points, firsts: t.firsts } : t;
+      out[q.id] = anon ? { n: t.n, points: t.points, firsts: t.firsts, skips: t.skips } : t;
       continue;
     }
     const counts = q.options.map(() => 0);

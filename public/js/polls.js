@@ -107,7 +107,7 @@ export function buildPoll(poll, { free, answered, isOwner, focused, gate, onVote
       onChange: (order) => onVote(order),
     }),
     free && h('p', { class: 'q-hint' }, RANK_HINT),
-    shown && total > 0 && rankResults({ options: poll.options, off: poll.off, last: poll.last ?? null, points: poll.points, who: poll.voters }),
+    shown && total > 0 && rankResults({ options: poll.options, off: poll.off, last: poll.last ?? null, points: poll.points, who: poll.voters, skipWho: poll.skipped }),
   ) : h('div', { class: 'poll-opts', role: 'radiogroup', 'aria-label': poll.prompt }, poll.options.map((label, k) => {
     if (poll.off?.includes(k)) {
       // Shown, never pickable, and left out of the tally.
