@@ -3,7 +3,7 @@
 import { api, ApiError } from './api.js';
 import { session, onSession, openSignIn, signOut, reportApiError } from './auth.js';
 import { navigate } from './router.js';
-import { h, icon, avatar, toast, copyText, confirmDialog, openDialog, plural, nameList, isTouch } from './ui.js';
+import { h, icon, avatar, toast, copyText, confirmDialog, openDialog, plural, nameList, isTouch, saveStatus } from './ui.js';
 import { attachPaint, buildTimesGrid, buildDaysGrid } from './grid.js';
 import { tally, split, rankDays, rankWindows, optionSlots, slotCount, slotsPerDay } from './lib/rank.js';
 import { slotRanges, overlaps, busyMinutes, blocksByDefault } from './lib/overlay.js';
@@ -177,6 +177,9 @@ export function renderEvent(root, id, { pollId = null } = {}) {
 
   function setSave(state) {
     saveState = state;
+    // Also shown floating, because the status next to the grid is often off screen (or hidden
+    // altogether in the polls-only view) when someone is answering questions further down.
+    saveStatus(state === 'saving' || state === 'saved' || state === 'error' ? state : null);
     ui?.refreshStatus();
   }
 
@@ -1000,6 +1003,7 @@ export function renderEvent(root, id, { pollId = null } = {}) {
     // A ranking is built one tap at a time, so it is sent once the taps pause.
     const rankTimers = new Map();
     function votePoll(poll, value) {
+      saveStatus('saving');
       if (poll.kind !== 'rank') return sendVote(poll, { choice: value });
       clearTimeout(rankTimers.get(poll.id));
       rankTimers.set(poll.id, setTimeout(() => sendVote(poll, { ranking: value }), 700));
@@ -1008,8 +1012,10 @@ export function renderEvent(root, id, { pollId = null } = {}) {
     async function sendVote(poll, body) {
       try {
         await api(`/events/${id}/polls/${poll.id}/vote`, { method: 'PUT', body, guestToken: guestToken() });
+        saveStatus('saved');
         await refresh({ force: true });
       } catch (e) {
+        saveStatus(null);
         if (e instanceof ApiError && e.code === 'not_available') {
           toast(`That poll is for people who can make ${longDay(poll.day)}.`);
           return load({ keepDraft: true });
@@ -1167,6 +1173,7 @@ export function renderEvent(root, id, { pollId = null } = {}) {
     document.removeEventListener('visibilitychange', onVisible);
     clearInterval(timer);
     clearTimeout(saveTimer);
+    saveStatus(null);
     cal = null; // the calendar token only ever lived in this closure
   };
 }

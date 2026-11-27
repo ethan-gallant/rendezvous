@@ -103,6 +103,30 @@ export function toast(message, { action, onAction, ms = 4500 } = {}) {
   return close;
 }
 
+let pill;
+let pillTimer = 0;
+/**
+ * The floating "Saving… / Saved" marker at the top of the screen, so it is in view wherever on the
+ * page someone just answered. 'saving' stays until replaced; 'saved' and 'error' fade on their own;
+ * null hides it.
+ */
+export function saveStatus(state) {
+  if (!pill) {
+    pill = h('div', { class: 'save-pill', role: 'status', 'aria-live': 'polite' });
+    document.body.append(pill);
+  }
+  clearTimeout(pillTimer);
+  if (!state) return pill.classList.remove('show');
+  pill.dataset.state = state;
+  pill.replaceChildren(...{
+    saving: [h('span', { class: 'dot pulse' }), 'Saving…'],
+    saved: [icon('check', 16), 'Saved'],
+    error: [icon('x', 16), 'Not saved'],
+  }[state]);
+  pill.classList.add('show');
+  if (state !== 'saving') pillTimer = setTimeout(() => pill.classList.remove('show'), state === 'saved' ? 2200 : 4000);
+}
+
 export async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
